@@ -10,10 +10,14 @@ DeepSeek Harness Web GUI 的**会话智能重命名**插件，把「分类 · �
 ## Install / 安装
 
 ```sh
+# from npm — prebuilt, skips the build-approval step
+dsh plugin --profile <your-profile> add dsh-session-smart-rename
+
+# or straight from this repo
 dsh plugin --profile <your-profile> add github:SonettoGu14/dsh-session-smart-rename
 ```
 
-Or install it from the plugin manager in DSH Settings. / 也可以在 DSH 设置里的插件管理中安装。
+Published on npm as [`dsh-session-smart-rename`](https://www.npmjs.com/package/dsh-session-smart-rename) (v0.2.0). You can also install it from the plugin manager in DSH Settings. / 也可以在 DSH 设置里的插件管理中安装。
 
 Restart the app once after installing (the client bundle is loaded at boot). / 安装后重启一次应用（客户端 bundle 在启动时加载）。
 
