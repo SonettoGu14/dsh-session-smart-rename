@@ -1,8 +1,8 @@
 {
   "name": "dsh-session-smart-rename",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Session smart rename for DSH: one-click, LLM-assisted titles built as \"category · topic\", with editable categories and custom tags.",
+  "description": "Smart session rename for DSH: a sidebar action and a model-facing smart_rename_session tool, both naming sessions as \"category · topic\".",
   "license": "MIT",
   "author": "SonettoGu14",
   "engines": {
@@ -15,6 +15,7 @@
     "session",
     "rename",
     "sidebar",
+    "tool",
     "llm"
   ],
   "repository": {

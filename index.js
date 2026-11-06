@@ -1,11 +1,14 @@
 /**
  * dsh-session-smart-rename — 宿主半体。
  *
- * 只做一件事：提供一个 `/api/dsh-session-smart-rename/suggest` 路由，
- * 读会话事件流（用户消息 + 助手回复 + 工作目录 + 当前标题），
- * 用会话本身那条模型路由调一次 LLM，让它先分类再命名。
+ * 两条入口共用同一段分析（读会话事件流 → 会话自己的模型路由 → 分类 + 主题）：
  *
- * 浏览器半体（client.js）拿到结果后弹确认框；LLM 不可用时客户端退回本地规则。
+ * 1. `POST /api/dsh-session-smart-rename/suggest` —— 浏览器半体的确认框用；
+ * 2. 模型工具 `smart_rename_session` —— 会话自己改标题；不满意时人仍可点侧边栏
+ *    「智能重命名」再改一次（两条路都写 `source.kind: "user"` 的标题，后来者覆盖）。
+ *
+ * 工具名没有用 `rename_session`：那个名字被 9Ashwin/dsh-session-rename 占用，
+ * 两个插件同时安装时同名的工具会撞车。
  *
  * @module dsh-session-smart-rename
  */
@@ -20,14 +23,19 @@ import { promisify } from 'node:util';
 /** 客户端模块 id、locale 命名空间与包名共用同一个值。 */
 export const name = 'dsh-session-smart-rename';
 
-/** 路由、会话读取、模型调用。 */
-export const inject = ['webServer', 'sessions', 'llm'];
+/** 路由、会话读取、模型调用、工具注册。 */
+export const inject = ['webServer', 'sessions', 'llm', 'tools'];
 
 const ROUTE = '/api/dsh-session-smart-rename/suggest';
+const TOOL_NAME = 'smart_rename_session';
 const MAX_TRANSCRIPT_CHARS = 12000;
 const MAX_MESSAGE_CHARS = 700;
 const LLM_TIMEOUT_MS = 25000;
 const LLM_MAX_TOKENS = 700;
+const TOOL_TIMEOUT_MS = 40000;
+
+/** 工具路径拿不到浏览器里的自定义 tag，这里给一份与客户端默认值一致的候选分类。 */
+const DEFAULT_CATEGORIES = ['文档', 'DSH', '插件', '维护', '空会话', '代码', '调研'];
 
 /* ------------------------------------------------------------------ *
  * HTTP 小工具（跟 dsh-mcp-status 同款闸门）
@@ -196,7 +204,6 @@ async function findSessionLog(sessionId) {
   return undefined;
 }
 
-/** 解压并解析 JSONL 会话日志；失败时返回 {error}。 */
 const execFileAsync = promisify(execFile);
 
 /**
@@ -244,7 +251,7 @@ const SYSTEM_PROMPT = [
 ].join('\n');
 
 /** 调一次模型，返回拼接后的文本。 */
-async function callModel(ctx, route, system, userText, sessionId) {
+async function callModel(ctx, route, userText, sessionId) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('LLM 超时')), LLM_TIMEOUT_MS);
   try {
@@ -266,7 +273,7 @@ async function callModel(ctx, route, system, userText, sessionId) {
     const options = {
       ...(call.config ?? {}),
       messages,
-      system,
+      system: SYSTEM_PROMPT,
       sessionId,
       purpose: 'session-smart-rename',
       signal: controller.signal,
@@ -312,21 +319,79 @@ function stripCategory(title) {
 }
 
 /* ------------------------------------------------------------------ *
- * 插件本体
+ * 分析：读会话内容 → 让会话自己的模型给出「分类 · 主题」
  * ------------------------------------------------------------------ */
 
 /**
- * 注册建议路由。
- * @param ctx - 插件上下文（webServer、sessions、llm 已就绪）。
- * @param rawConfig - 可选 `{provider, model}`，读不到会话路由时兜底。
+ * 分析一个会话，返回 `{ok:true, ...建议}` 或 `{ok:false, status, error}`。
+ * 路由与模型工具共用，避免两套提示词漂移。
+ *
+ * @param ctx - 插件上下文（sessions、llm 已就绪）。
+ * @param sessionId - 目标会话 id。
+ * @param tags - 候选分类（客户端自定义 tag 或配置的默认值）。
+ * @param fallbackRoute - 会话里读不到模型路由时的兜底。
  */
-export function apply(ctx, rawConfig) {
-  const fallbackRoute = {
-    provider: typeof rawConfig?.provider === 'string' ? rawConfig.provider : 'deepseek-official',
-    model: typeof rawConfig?.model === 'string' ? rawConfig.model : 'deepseek-flash',
-  };
+async function analyzeSession(ctx, sessionId, tags, fallbackRoute) {
+  const session = typeof ctx.sessions?.get === 'function' ? ctx.sessions.get(sessionId) : undefined;
+  let events = session !== undefined && typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : [];
+  let cwd = cwdOf(session, events);
+  if (events.length === 0) {
+    const cold = await readColdEvents(sessionId);
+    if (cold.events !== undefined) {
+      events = cold.events;
+      cwd = cwd || cwdOf(undefined, events);
+    } else if (session === undefined) {
+      return { ok: false, status: 404, error: '读取不到会话：' + (cold.error || sessionId) };
+    }
+  }
 
-  ctx.effect(() => ctx.webServer.register({
+  const messages = collectMessages(events);
+  if (messages.length === 0) {
+    return { ok: false, status: 200, error: '日志里没有可读的用户消息' };
+  }
+
+  const titleEvent = [...events].reverse().find((event) => event.type === 'session/title');
+  const currentTitle = typeof titleEvent?.data?.title === 'string' ? titleEvent.data.title : '';
+  const route = routeOf(events, fallbackRoute);
+  const userText = [
+    '候选分类：' + (tags.length > 0 ? tags.join('、') : '（无，自拟）'),
+    '工作目录：' + (cwd || '（未知）'),
+    '当前标题：' + (currentTitle || '（还没有标题）'),
+    '',
+    '对话记录：',
+    buildTranscript(messages),
+  ].join('\n');
+
+  const raw = await callModel(ctx, route, userText, sessionId);
+  const parsed = parseLooseJson(raw);
+  if (parsed === null) {
+    return { ok: false, status: 502, error: '模型没有返回可解析的 JSON', raw: cleanText(raw, 400) };
+  }
+
+  const category = cleanText(parsed.category, 12);
+  const theme = cleanText(stripCategory(parsed.title), 24);
+  if (!category || !theme) {
+    return { ok: false, status: 502, error: '模型返回的分类或标题为空' };
+  }
+
+  return {
+    ok: true,
+    source: 'llm',
+    model: route,
+    category,
+    title: theme,
+    theme,
+    suggested: category + ' · ' + theme,
+    reason: cleanText(parsed.reason, 40) || '由模型按对话内容归类',
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * 入口一：HTTP 路由（浏览器确认框）
+ * ------------------------------------------------------------------ */
+
+function registerSuggestRoute(ctx, fallbackRoute) {
+  return ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: ROUTE,
     handler: async (request, response) => {
@@ -342,64 +407,130 @@ export function apply(ctx, rawConfig) {
           ? body.tags.filter((tag) => typeof tag === 'string' && tag.trim() !== '').slice(0, 12)
           : [];
 
-        const session = typeof ctx.sessions?.get === 'function' ? ctx.sessions.get(sessionId) : undefined;
-        let events = session !== undefined && typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : [];
-        let cwd = cwdOf(session, events);
-        if (events.length === 0) {
-          const cold = await readColdEvents(sessionId);
-          if (cold.events !== undefined) {
-            events = cold.events;
-            cwd = cwd || cwdOf(undefined, events);
-          } else if (session === undefined) {
-            return sendJson(response, 404, { ok: false, error: '读取不到会话：' + (cold.error || sessionId) });
-          }
+        const result = await analyzeSession(ctx, sessionId, tags, fallbackRoute);
+        if (!result.ok) {
+          const body = { ok: false, error: result.error };
+          if (result.raw !== undefined) body.raw = result.raw;
+          return sendJson(response, result.status, body);
         }
-
-        const messages = collectMessages(events);
-        const titleEvent = [...events].reverse().find((event) => event.type === 'session/title');
-        const currentTitle = typeof titleEvent?.data?.title === 'string' ? titleEvent.data.title : '';
-
-        if (messages.length === 0) {
-          // 读不到用户消息时交给浏览器半体的本地规则兜底（它能拿到 blank 判定）。
-          return sendJson(response, 200, { ok: false, error: '日志里没有可读的用户消息' });
-        }
-
-        const route = routeOf(events, fallbackRoute);
-        const userText = [
-          '候选分类：' + (tags.length > 0 ? tags.join('、') : '（无，自拟）'),
-          '工作目录：' + (cwd || '（未知）'),
-          '当前标题：' + (currentTitle || '（还没有标题）'),
-          '',
-          '对话记录：',
-          buildTranscript(messages),
-        ].join('\n');
-
-        const raw = await callModel(ctx, route, SYSTEM_PROMPT, userText, sessionId);
-        const parsed = parseLooseJson(raw);
-        if (parsed === null) {
-          return sendJson(response, 502, { ok: false, error: '模型没有返回可解析的 JSON', raw: cleanText(raw, 400) });
-        }
-
-        const category = cleanText(parsed.category, 12);
-        const theme = cleanText(stripCategory(parsed.title), 24);
-        if (!category || !theme) {
-          return sendJson(response, 502, { ok: false, error: '模型返回的分类或标题为空' });
-        }
-        const reason = cleanText(parsed.reason, 40);
-
-        return sendJson(response, 200, {
-          ok: true,
-          source: 'llm',
-          model: route,
-          category,
-          title: theme,
-          theme,
-          suggested: category + ' · ' + theme,
-          reason: reason || '由模型按对话内容归类',
-        });
+        return sendJson(response, 200, result);
       } catch (error) {
         return sendJson(response, 500, { ok: false, error: String(error?.message ?? error) });
       }
     },
   }), 'dsh-session-smart-rename: suggest route');
+}
+
+/* ------------------------------------------------------------------ *
+ * 入口二：模型工具（会话自己改名）
+ * ------------------------------------------------------------------ */
+
+const TOOL_DESCRIPTION = [
+  'Rename a DeepSeek Harness session by pinning an explicit title.',
+  'Omit `title` to let the plugin read the conversation and name the session "<category> · <topic>"; pass `title` only when the user explicitly asked for a specific name.',
+  'Use it when the user asks to rename the session, or when the work has clearly moved to a different subject and the current title no longer describes it.',
+  'A pinned title (source: user) is not overwritten by automatic title generation; the user can still rename it later from the sidebar menu.',
+].join(' ');
+
+function registerRenameTool(ctx, fallbackRoute, categories) {
+  ctx.tools.register({
+    name: TOOL_NAME,
+    description: TOOL_DESCRIPTION,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        title: {
+          type: 'string',
+          description: 'Exact title to pin. Omit to auto-name from the conversation.',
+        },
+        session_id: {
+          type: 'string',
+          description: 'Target session id. Omit to rename the session you are running in.',
+        },
+      },
+      required: [],
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          session_id: { type: 'string' },
+          title: { type: 'string' },
+          seq: { type: 'integer' },
+          source: { type: 'string' },
+        },
+        required: ['session_id', 'title', 'seq', 'source'],
+      },
+      render(_args, value) {
+        return [{ type: 'text', text: JSON.stringify(value, null, 2) }];
+      },
+    },
+    timeoutMs: TOOL_TIMEOUT_MS,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const input = args !== null && typeof args === 'object' ? args : {};
+      const wanted = typeof input.title === 'string' ? input.title.trim() : '';
+      const sessionId = typeof input.session_id === 'string' ? input.session_id.trim() : '';
+
+      let session;
+      if (sessionId) {
+        session = typeof ctx.sessions?.get === 'function' ? ctx.sessions.get(sessionId) : undefined;
+        if (session === undefined) {
+          throw new Error(`会话 ${sessionId} 没有加载，先切换过去再改名`);
+        }
+      } else {
+        session = exec?.agent?.session;
+        if (session === undefined) {
+          throw new Error('没有指定 session_id，这次调用也没有归属会话');
+        }
+      }
+
+      let title = wanted;
+      let source = 'model';
+      if (!title) {
+        const analysis = await analyzeSession(ctx, String(session.id), categories, fallbackRoute);
+        if (!analysis.ok) throw new Error('智能命名失败：' + analysis.error);
+        title = analysis.suggested;
+        source = 'analyzed';
+      }
+
+      const sessionTitle = typeof ctx.get === 'function' ? ctx.get('sessionTitle') : undefined;
+      if (sessionTitle === undefined || typeof sessionTitle.rename !== 'function') {
+        throw new Error('sessionTitle 服务不可用，无法写标题');
+      }
+
+      const snapshot = sessionTitle.rename(session, title);
+      const snapshotTitle = typeof snapshot?.title === 'string' ? snapshot.title : title;
+      return {
+        session_id: String(session.id),
+        title: snapshotTitle,
+        seq: typeof snapshot?.eventSeq === 'number' ? snapshot.eventSeq : 0,
+        source,
+      };
+    },
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * 插件本体
+ * ------------------------------------------------------------------ */
+
+/**
+ * 注册建议路由与改名工具。
+ * @param ctx - 插件上下文（webServer、sessions、llm、tools 已就绪）。
+ * @param rawConfig - 可选 `{provider, model}` 兜底路由、`{categories}` 工具用的候选分类。
+ */
+export function apply(ctx, rawConfig) {
+  const fallbackRoute = {
+    provider: typeof rawConfig?.provider === 'string' ? rawConfig.provider : 'deepseek-official',
+    model: typeof rawConfig?.model === 'string' ? rawConfig.model : 'deepseek-flash',
+  };
+  const categories = Array.isArray(rawConfig?.categories) && rawConfig.categories.length > 0
+    ? rawConfig.categories.filter((item) => typeof item === 'string' && item.trim() !== '').slice(0, 24)
+    : DEFAULT_CATEGORIES;
+
+  registerSuggestRoute(ctx, fallbackRoute);
+  registerRenameTool(ctx, fallbackRoute, categories);
 }
