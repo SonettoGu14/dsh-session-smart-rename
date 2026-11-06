@@ -1,0 +1,50 @@
+{
+  "name": "dsh-session-smart-rename",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Session smart rename for DSH: one-click, LLM-assisted titles built as \"category · topic\", with editable categories and custom tags.",
+  "license": "MIT",
+  "author": "SonettoGu14",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "session",
+    "rename",
+    "sidebar",
+    "llm"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SonettoGu14/dsh-session-smart-rename.git"
+  },
+  "homepage": "https://github.com/SonettoGu14/dsh-session-smart-rename#readme",
+  "bugs": {
+    "url": "https://github.com/SonettoGu14/dsh-session-smart-rename/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  }
+}
