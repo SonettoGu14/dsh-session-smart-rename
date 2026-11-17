@@ -48,6 +48,8 @@ Sidebar session row → `…` → **Smart rename**.
 
 `Enter` saves, `Esc` closes. The menu entry itself never opens a dialog until the analysis finishes, so you always see suggestions before committing.
 
+Titles are fitted to a 26-cell width budget (a CJK character counts as two), so a long English topic is cut on a word boundary instead of spilling out of the sidebar.
+
 ## Use it from the agent
 
 `smart_rename_session`
@@ -80,7 +82,7 @@ Not happy with the result? Rename it again from the sidebar — both paths write
 - `POST /api/dsh-session-smart-rename/suggest` serves the dialog; the agent uses the tool.
 - Sessions the host has not loaded are read from disk (`~/.dsh/sessions/**/<id>/session.v4.jsonl.zstd`), decompressed with `zstd -dc` because the log is several concatenated frames.
 - Both entries write through the host's `sessionTitle.rename` (the dialog via `POST /api/session/rename`), so the title is pinned exactly like the built-in rename.
-- Titles are generated with the lowest reasoning effort the model offers, on a 2048-token budget for three candidates plus thinking, with a one-shot retry at 700 tokens if the gateway rejects the larger budget.
+- Titles are generated with the lowest reasoning effort the model offers, on a 2048-token budget for three candidates plus thinking, with a one-shot retry at 700 tokens if the gateway rejects the larger budget. If the model comes back with fewer than three candidates, one more call tops them up, carrying the ones you already have as "do not repeat".
 - Suggestions are cached per session for five minutes; **Another batch** skips the cache. If the model or the log is unavailable, the dialog falls back to local keyword rules and labels the source `Local rules`.
 
 ## Compatibility

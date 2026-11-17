@@ -48,6 +48,8 @@ dsh plugin --profile <你的 profile> add github:SonettoGu14/dsh-session-smart-r
 
 `回车` 保存，`Esc` 关闭。点菜单后会先等分析完成再弹窗，所以你总是先看到建议再决定。
 
+标题按 26 格显示宽度收口（一个汉字算两格），长英文主题会断在词边界上，不会溢出侧栏。
+
 ## 模型侧：工具
 
 `smart_rename_session`
@@ -80,7 +82,7 @@ smart_rename_session({ title: 'PRD-042 · 推荐信导出' })  // 钉住指定�
 - `POST /api/dsh-session-smart-rename/suggest` 服务弹窗，工具服务 agent。
 - 宿主没加载过的会话直接读磁盘日志（`~/.dsh/sessions/**/<id>/session.v4.jsonl.zstd`），用 `zstd -dc` 解压——日志是多个 zstd 帧拼接的。
 - 两个入口都通过宿主的 `sessionTitle.rename` 写标题（弹窗走 `POST /api/session/rename`），跟内置重命名的钉住语义一致。
-- 生成标题时用模型声明的最低推理档，2048 token 预算覆盖三条候选加思考；网关拒绝大预算时退到 700 token 重试一次。
+- 生成标题时用模型声明的最低推理档，2048 token 预算覆盖三条候选加思考；网关拒绝大预算时退到 700 token 重试一次。模型只回不到三条候选时，会带着「已有的别再给」再补问一次。
 - 建议按会话缓存五分钟，「换一批」跳过缓存；模型或日志不可用时退回本地关键词规则，并把来源标成「本地规则」。
 
 ## 兼容性

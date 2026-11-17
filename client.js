@@ -311,6 +311,59 @@ window.__ModuleLoader__.load({
       return value.slice(0, max - 1).trimEnd() + '…';
     }
 
+    /** 标题总宽预算（CJK 记 2 格）：侧栏一行大概放得下 26 格。 */
+    const TITLE_WIDTH = 26;
+
+    /** 单字符显示宽度：CJK / 全角记 2，其余记 1。 */
+    function charWidth(codePoint) {
+      const wide = (codePoint >= 0x1100 && codePoint <= 0x115f)
+        || codePoint === 0x2329 || codePoint === 0x232a
+        || (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f)
+        || (codePoint >= 0xac00 && codePoint <= 0xd7a3)
+        || (codePoint >= 0xf900 && codePoint <= 0xfaff)
+        || (codePoint >= 0xfe30 && codePoint <= 0xfe6f)
+        || (codePoint >= 0xff00 && codePoint <= 0xff60)
+        || (codePoint >= 0xffe0 && codePoint <= 0xffe6);
+      return wide ? 2 : 1;
+    }
+
+    /** 字符串的显示宽度。 */
+    function displayWidth(text) {
+      let total = 0;
+      for (const char of String(text || '')) total += charWidth(char.codePointAt(0));
+      return total;
+    }
+
+    /** 按显示宽度截断；英文尽量断在词边界，尾巴补省略号。 */
+    function clampWidth(text, max) {
+      const value = String(text || '').trim();
+      if (max <= 1) return '…';
+      if (displayWidth(value) <= max) return value;
+      let used = 0;
+      let cut = 0;
+      let lastSpace = -1;
+      for (const char of value) {
+        const step = charWidth(char.codePointAt(0));
+        if (used + step > max - 1) break;
+        used += step;
+        cut += char.length;
+        if (char === ' ') lastSpace = cut - 1;
+      }
+      let head = value.slice(0, cut).trimEnd();
+      // 被切断的是单词中间（还剩好几格才结束这个词）就退回上一个词边界
+      if (lastSpace > 1 && cut < value.length && displayWidth(value) - used > 4) {
+        head = value.slice(0, lastSpace).trimEnd();
+      }
+      return head ? head + '…' : '…';
+    }
+
+    /** 主题留给标题的预算：总宽减去「分类 · 」前缀。 */
+    function fitTheme(category, topic) {
+      const left = String(category || '').trim();
+      const budget = left ? TITLE_WIDTH - displayWidth(left) - 3 : TITLE_WIDTH;
+      return clampWidth(topic, Math.max(8, budget));
+    }
+
     /** 先分类，再给出建议名。 */
     function classify(info) {
       if (info.blank) {
@@ -318,10 +371,11 @@ window.__ModuleLoader__.load({
         const named = base && base !== 'default-workspace';
         const theme = named ? clampText(base, 20) : TX.deletable;
         const empty = categoryLabel('empty');
+        const fitted = fitTheme(empty, theme);
         return {
           category: empty,
-          theme,
-          suggested: composeTitle(empty, theme),
+          theme: fitted,
+          suggested: composeTitle(empty, fitted),
           reason: named ? TX.emptyNamed : TX.emptyPlain,
         };
       }
@@ -330,12 +384,14 @@ window.__ModuleLoader__.load({
         if (rule.keywords.test(haystack) || (rule.cwd && rule.cwd.test(info.cwd))) {
           const theme = deriveTheme(info);
           const category = categoryLabel(rule.key);
-          return { category, theme, suggested: composeTitle(category, theme), reason: TX.matched(category) };
+          const fitted = fitTheme(category, theme);
+          return { category, theme: fitted, suggested: composeTitle(category, fitted), reason: TX.matched(category) };
         }
       }
       const theme = deriveTheme(info);
       const other = categoryLabel('other');
-      return { category: other, theme, suggested: composeTitle(other, theme), reason: TX.noMatch };
+      const fitted = fitTheme(other, theme);
+      return { category: other, theme: fitted, suggested: composeTitle(other, fitted), reason: TX.noMatch };
     }
 
     /* ------------------------------------------------------------------ *
@@ -635,7 +691,7 @@ window.__ModuleLoader__.load({
       for (const item of source) {
         if (item === null || typeof item !== 'object') continue;
         const category = typeof item.category === 'string' ? item.category.trim() : '';
-        const theme = String(item.theme || item.title || '').trim();
+        const theme = fitTheme(category, String(item.theme || item.title || '').trim());
         if (!theme) continue;
         out.push({
           category,

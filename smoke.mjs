@@ -24,6 +24,8 @@ let capturedUserText = '';
 let capturedMaxTokens = 0;
 let rejectBigBudget = false;
 let prepareAttempts = 0;
+let shortBatchOnce = false;
+let shortBatchCalls = 0;
 const renamed = [];
 
 const sessionTitle = {
@@ -73,6 +75,18 @@ const ctx = {
           console.log('user 提示:', options.messages[0].content[0].text.slice(0, 160).replace(/\n/g, ' | '));
           capturedUserText = options.messages[0].content[0].text;
           capturedMaxTokens = route.maxTokens;
+          if (shortBatchOnce) {
+            shortBatchCalls += 1;
+            const few = shortBatchCalls === 1
+              ? [{ category: '文档', title: '推荐信排版导出 PDF', reason: '首轮只给一条' }]
+              : [
+                { category: '文档', title: '推荐信排版导出 PDF', reason: '重复的会被丢掉' },
+                { category: '文档', title: 'XJTLU 模板推荐信', reason: '提到了具体模板' },
+                { category: '其他', title: '推荐信 PDF 交付', reason: '强调交付物' },
+              ];
+            yield { type: 'text-delta', text: JSON.stringify({ candidates: few }) };
+            return;
+          }
           yield {
             type: 'text-delta',
             text: JSON.stringify({
@@ -149,6 +163,22 @@ await capturedRoute.handler(
 );
 if (again.state.status !== 200 || !capturedUserText.includes('不要与这些已给过的标题重复')) {
   console.error('FAIL: 换一批应把已给过的标题带进提示词');
+  process.exit(1);
+}
+
+/* 1c) 模型只回 1 条 → 自动补一次，凑满 3 条（重复的丢掉） */
+shortBatchOnce = true;
+const beforeTopUp = llmCalls;
+const topped = makeResponse();
+await capturedRoute.handler(makeRequest({ sessionId: 's1', tags: ['文档'] }), topped);
+shortBatchOnce = false;
+console.log('补齐候选:', topped.state.status, '| 模型调用 +', llmCalls - beforeTopUp, '| 候选', topped.state.body.candidates && topped.state.body.candidates.length);
+if (topped.state.status !== 200 || llmCalls - beforeTopUp !== 2 || topped.state.body.candidates.length !== 3) {
+  console.error('FAIL: 只回 1 条时应自动补一次凑满 3 条');
+  process.exit(1);
+}
+if (topped.state.body.candidates[2].suggested !== '其他 · 推荐信 PDF 交付') {
+  console.error('FAIL: 补齐的候选不对');
   process.exit(1);
 }
 

@@ -11,7 +11,7 @@ DSH（DeepSeek Harness）Web GUI 插件：把会话标题命名成 `分类 · �
 
 两条路都写 `source.kind: "user"` 的标题，后写的覆盖先写的（人永远有最终决定权）。
 
-已发布：npm [`dsh-session-smart-rename`](https://www.npmjs.com/package/dsh-session-smart-rename)（当前 `0.3.1`）；已收录进 [`awesome-dsh-plugin`](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（PR #12513，2026-11-07 合并）。
+已发布：npm [`dsh-session-smart-rename`](https://www.npmjs.com/package/dsh-session-smart-rename)（当前 `0.3.2`）；已收录进 [`awesome-dsh-plugin`](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（PR #12513，2026-11-07 合并）。
 
 ## 仓库结构
 
@@ -58,7 +58,7 @@ node --check index.js && node --check client.js
 node smoke.mjs
 ```
 
-`smoke.mjs` 应输出 `SMOKE OK`，且覆盖：路由 200 且返回 3 条 `candidates`（单条字段仍向后兼容）、换一批把 `avoid` 写进提示词、预算回退（2048 被拒 → 700 重试一次）、未知会话 404、工具自动命名（`source: "analyzed"`）、工具直接命名（`source: "model"`，且不再调模型）、两种报错。
+`smoke.mjs` 应输出 `SMOKE OK`，且覆盖：路由 200 且返回 3 条 `candidates`（单条字段仍向后兼容）、换一批把 `avoid` 写进提示词、只回 1 条时自动补一次凑满 3 条、预算回退（2048 被拒 → 700 重试一次）、未知会话 404、工具自动命名（`source: "analyzed"`）、工具直接命名（`source: "model"`，且不再调模型）、两种报错。
 
 真机检查（改宿主半体后必须做一次）：
 
@@ -119,6 +119,6 @@ Trusted Publishing 的三个硬要求（npm 官方文档）：npm CLI ≥ 11.5.1
 
 - 目前唯一的 CI 是 tag 触发的 `publish.yml`（发布用），PR 上还没有跑 `node --check` + `smoke.mjs` 的检查 workflow；
 - `v0.3.1` 起每个版本都有 annotated tag + GitHub Release（更早的 `v0.2.0` / `v0.3.0` 没补）；
-- v0.3.2 可做：按显示宽度截断标题（CJK 算 2 单位）、把浏览器 tag 落一份到宿主给工具路径用；
+- v0.3.2 可做：把浏览器 tag 落一份到宿主给工具路径用（按显示宽度截断标题、候选不足时补一次已在 0.3.2 做掉）；
 - v0.4 可做：批量「会话整理」面板（列表里按分类/关键词筛会话、批量改名）——用户明确表达过想要；
 - 若要降低与 `9Ashwin/dsh-session-rename` 的重复度，可考虑把工具拆成独立包；目前策略是保留超集并在 PR 里说明差异。

@@ -350,6 +350,27 @@ function stripCategory(title) {
  * ------------------------------------------------------------------ */
 
 /**
+ * 问模型一次并整理成候选。失败时返回 `{ok:false, failure}`，failure 就是直接回给客户端的响应体。
+ *
+ * @param ctx - 插件上下文（llm 已就绪）。
+ * @param route - 模型路由。
+ * @param userText - 已经拼好的提示词。
+ * @param sessionId - 会话 id，仅用于日志。
+ */
+async function askCandidates(ctx, route, userText, sessionId) {
+  const raw = await callModel(ctx, route, userText, sessionId);
+  const parsed = parseLooseJson(raw);
+  if (parsed === null) {
+    return { ok: false, failure: { ok: false, status: 502, error: '模型没有返回可解析的 JSON', raw: cleanText(raw, 400) } };
+  }
+  const candidates = normalizeCandidates(parsed);
+  if (candidates.length === 0) {
+    return { ok: false, failure: { ok: false, status: 502, error: '模型返回的分类或标题为空' } };
+  }
+  return { ok: true, candidates };
+}
+
+/**
  * 分析一个会话，返回 `{ok:true, ...建议}` 或 `{ok:false, status, error}`。
  * 路由与模型工具共用，避免两套提示词漂移。
  *
@@ -384,25 +405,32 @@ async function analyzeSession(ctx, sessionId, tags, fallbackRoute, avoid = []) {
   const avoided = avoid
     .filter((item) => typeof item === 'string' && item.trim() !== '')
     .slice(0, 6);
-  const userText = [
+  const buildPromptText = (avoidList) => [
     '候选分类：' + (tags.length > 0 ? tags.join('、') : '（无，自拟）'),
     '工作目录：' + (cwd || '（未知）'),
     '当前标题：' + (currentTitle || '（还没有标题）'),
-    ...(avoided.length > 0 ? ['换一批，不要与这些已给过的标题重复：' + avoided.join('；')] : []),
+    ...(avoidList.length > 0 ? ['换一批，不要与这些已给过的标题重复：' + avoidList.join('；')] : []),
     '',
     '对话记录：',
     buildTranscript(messages),
   ].join('\n');
 
-  const raw = await callModel(ctx, route, userText, sessionId);
-  const parsed = parseLooseJson(raw);
-  if (parsed === null) {
-    return { ok: false, status: 502, error: '模型没有返回可解析的 JSON', raw: cleanText(raw, 400) };
-  }
+  const first = await askCandidates(ctx, route, buildPromptText(avoided), sessionId);
+  if (!first.ok) return first.failure;
+  const candidates = first.candidates;
 
-  const candidates = normalizeCandidates(parsed);
-  if (candidates.length === 0) {
-    return { ok: false, status: 502, error: '模型返回的分类或标题为空' };
+  // 模型偶尔只回 1~2 条：把已经拿到的标题并进 avoid 再补一次（最多补一次）。
+  if (candidates.length < 3) {
+    const seen = candidates.map((item) => item.suggested);
+    const more = await askCandidates(ctx, route, buildPromptText(avoided.concat(seen).slice(0, 10)), sessionId);
+    if (more.ok) {
+      for (const item of more.candidates) {
+        if (seen.includes(item.suggested)) continue;
+        seen.push(item.suggested);
+        candidates.push(item);
+        if (candidates.length === 3) break;
+      }
+    }
   }
 
   const primary = candidates[0];
