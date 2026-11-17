@@ -31,7 +31,10 @@ const TOOL_NAME = 'smart_rename_session';
 const MAX_TRANSCRIPT_CHARS = 12000;
 const MAX_MESSAGE_CHARS = 700;
 const LLM_TIMEOUT_MS = 25000;
-const LLM_MAX_TOKENS = 700;
+/** 三条候选 + 推理模型的思考都吃这一份预算；非推理模型答完就停，抬预算不拖慢。 */
+const LLM_MAX_TOKENS = 2048;
+/** 某些网关会拒绝偏大的 maxTokens，退回原来的保守值再试一次。 */
+const LLM_MAX_TOKENS_FALLBACK = 700;
 const TOOL_TIMEOUT_MS = 40000;
 
 /** 工具路径拿不到浏览器里的自定义 tag，这里给一份与客户端默认值一致的候选分类。 */
@@ -243,48 +246,72 @@ async function readColdEvents(sessionId) {
 
 const SYSTEM_PROMPT = [
   '你是 DSH 会话命名助手。阅读对话记录，判断这次会话真正在做什么，然后输出严格 JSON（不要 markdown 代码块）：',
-  '{"category":"…","title":"…","reason":"…"}',
+  '{"candidates":[{"category":"…","title":"…","reason":"…"},{"category":"…","title":"…","reason":"…"},{"category":"…","title":"…","reason":"…"}]}',
   '规则：',
-  '- category：优先从给定候选分类中选；都不合适时自拟 2~5 字的新分类。',
-  '- title：4~16 个汉字的名词短语，说清实际产出或主题；不要照抄用户原话，不要"帮我/请/能不能/我想"这类词，不要重复分类名。',
-  '- reason：一句话（不超过 30 字）说明凭什么这么分类。',
+  '- 给 3 条候选，角度要真的不同（例如按产出、按主题、按下一步），不要只换同义词。',
+  '- category：优先从给定候选分类中选；都不合适时自拟一个新分类（中文 2~5 字 / 英文 1~2 个词）。',
+  '- title：说清实际产出或主题的名词短语，中文 4~16 字、英文 2~6 个词；语言与对话主要使用的语言一致。不要照抄用户原话，不要"帮我/请/能不能/我想"这类词，不要重复分类名，也不要再带「分类 · 」前缀。',
+  '- reason：一句话说明这一条凭什么这么起，不超过 30 个字符，语言同 title。',
 ].join('\n');
 
+/** 推理档：模型自己声明了「关」就用「关」，否则用声明列表里最低的一档。 */
+function pickEffort(efforts) {
+  if (!Array.isArray(efforts) || efforts.length === 0) return undefined;
+  const off = efforts.find((item) => /^(off|none|disabled|no[-_ ]?think)/i.test(String(item?.id ?? '')));
+  return (off ?? efforts[0])?.id;
+}
+
 /** 调一次模型，返回拼接后的文本。 */
+async function streamOnce(ctx, route, userText, sessionId, maxTokens, controller) {
+  const call = await ctx.llm.prepareCall(
+    { provider: route.provider, model: route.model, maxTokens },
+    controller.signal,
+    (controls, model) => {
+      // 标题类短任务：能关推理就关，关不掉退最低档，避免思考烧光输出预算。
+      const effort = pickEffort(model?.reasoning?.efforts);
+      return effort === undefined ? controls : { ...controls, reasoningEffort: effort };
+    },
+  );
+  const messages = [{
+    id: randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text: userText }],
+    source: { kind: 'dsh-session-smart-rename' },
+  }];
+  const options = {
+    ...(call.config ?? {}),
+    messages,
+    system: SYSTEM_PROMPT,
+    sessionId,
+    purpose: 'session-smart-rename',
+    signal: controller.signal,
+  };
+  let output = '';
+  for await (const chunk of call.stream(options)) {
+    if (!chunk) continue;
+    if (chunk.type === 'text-delta' && typeof chunk.text === 'string') output += chunk.text;
+    else if (chunk.type === 'text' && typeof chunk.text === 'string') output += chunk.text;
+  }
+  return output;
+}
+
+/**
+ * 调模型，预算被网关拒绝时退回保守值重试一次（超时/取消不重试）。
+ * @param ctx - 插件上下文。
+ * @param route - provider/model。
+ * @param userText - 用户侧提示词。
+ * @param sessionId - 写进调用的会话 id。
+ */
 async function callModel(ctx, route, userText, sessionId) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('LLM 超时')), LLM_TIMEOUT_MS);
   try {
-    const call = await ctx.llm.prepareCall(
-      { provider: route.provider, model: route.model, maxTokens: LLM_MAX_TOKENS },
-      controller.signal,
-      (controls, model) => {
-        // 与官方标题插件一致：标题类短任务只取最低推理档，避免思考烧光输出预算。
-        const effort = model?.reasoning?.efforts?.[0]?.id;
-        return effort === undefined ? controls : { ...controls, reasoningEffort: effort };
-      },
-    );
-    const messages = [{
-      id: randomUUID(),
-      role: 'user',
-      content: [{ type: 'text', text: userText }],
-      source: { kind: 'dsh-session-smart-rename' },
-    }];
-    const options = {
-      ...(call.config ?? {}),
-      messages,
-      system: SYSTEM_PROMPT,
-      sessionId,
-      purpose: 'session-smart-rename',
-      signal: controller.signal,
-    };
-    let output = '';
-    for await (const chunk of call.stream(options)) {
-      if (!chunk) continue;
-      if (chunk.type === 'text-delta' && typeof chunk.text === 'string') output += chunk.text;
-      else if (chunk.type === 'text' && typeof chunk.text === 'string') output += chunk.text;
+    try {
+      return await streamOnce(ctx, route, userText, sessionId, LLM_MAX_TOKENS, controller);
+    } catch (error) {
+      if (controller.signal.aborted || LLM_MAX_TOKENS === LLM_MAX_TOKENS_FALLBACK) throw error;
+      return await streamOnce(ctx, route, userText, sessionId, LLM_MAX_TOKENS_FALLBACK, controller);
     }
-    return output;
   } finally {
     clearTimeout(timer);
   }
@@ -330,8 +357,9 @@ function stripCategory(title) {
  * @param sessionId - 目标会话 id。
  * @param tags - 候选分类（客户端自定义 tag 或配置的默认值）。
  * @param fallbackRoute - 会话里读不到模型路由时的兜底。
+ * @param avoid - 「换一批」时上一批已经给过的标题，提示模型别重复。
  */
-async function analyzeSession(ctx, sessionId, tags, fallbackRoute) {
+async function analyzeSession(ctx, sessionId, tags, fallbackRoute, avoid = []) {
   const session = typeof ctx.sessions?.get === 'function' ? ctx.sessions.get(sessionId) : undefined;
   let events = session !== undefined && typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : [];
   let cwd = cwdOf(session, events);
@@ -353,10 +381,14 @@ async function analyzeSession(ctx, sessionId, tags, fallbackRoute) {
   const titleEvent = [...events].reverse().find((event) => event.type === 'session/title');
   const currentTitle = typeof titleEvent?.data?.title === 'string' ? titleEvent.data.title : '';
   const route = routeOf(events, fallbackRoute);
+  const avoided = avoid
+    .filter((item) => typeof item === 'string' && item.trim() !== '')
+    .slice(0, 6);
   const userText = [
     '候选分类：' + (tags.length > 0 ? tags.join('、') : '（无，自拟）'),
     '工作目录：' + (cwd || '（未知）'),
     '当前标题：' + (currentTitle || '（还没有标题）'),
+    ...(avoided.length > 0 ? ['换一批，不要与这些已给过的标题重复：' + avoided.join('；')] : []),
     '',
     '对话记录：',
     buildTranscript(messages),
@@ -368,22 +400,51 @@ async function analyzeSession(ctx, sessionId, tags, fallbackRoute) {
     return { ok: false, status: 502, error: '模型没有返回可解析的 JSON', raw: cleanText(raw, 400) };
   }
 
-  const category = cleanText(parsed.category, 12);
-  const theme = cleanText(stripCategory(parsed.title), 24);
-  if (!category || !theme) {
+  const candidates = normalizeCandidates(parsed);
+  if (candidates.length === 0) {
     return { ok: false, status: 502, error: '模型返回的分类或标题为空' };
   }
 
+  const primary = candidates[0];
   return {
     ok: true,
     source: 'llm',
     model: route,
-    category,
-    title: theme,
-    theme,
-    suggested: category + ' · ' + theme,
-    reason: cleanText(parsed.reason, 40) || '由模型按对话内容归类',
+    category: primary.category,
+    title: primary.theme,
+    theme: primary.theme,
+    suggested: primary.suggested,
+    reason: primary.reason,
+    candidates,
   };
+}
+
+/**
+ * 把模型返回整理成 1~3 条候选。
+ * 兼容旧的单条形状，也容忍候选里混进无效项或重复项。
+ * @param parsed - 宽松 JSON 解析结果。
+ */
+function normalizeCandidates(parsed) {
+  const list = Array.isArray(parsed?.candidates) ? parsed.candidates : [parsed];
+  const seen = new Set();
+  const out = [];
+  for (const item of list) {
+    if (item === null || typeof item !== 'object') continue;
+    const category = cleanText(item.category, 12);
+    const theme = cleanText(stripCategory(item.title), 24);
+    if (!theme) continue;
+    const suggested = category ? category + ' · ' + theme : theme;
+    if (seen.has(suggested)) continue;
+    seen.add(suggested);
+    out.push({
+      category,
+      theme,
+      suggested,
+      reason: cleanText(item.reason, 40) || '由模型按对话内容归类',
+    });
+    if (out.length === 3) break;
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ *
@@ -406,8 +467,11 @@ function registerSuggestRoute(ctx, fallbackRoute) {
         const tags = Array.isArray(body.tags)
           ? body.tags.filter((tag) => typeof tag === 'string' && tag.trim() !== '').slice(0, 12)
           : [];
+        const avoid = Array.isArray(body.avoid)
+          ? body.avoid.filter((item) => typeof item === 'string' && item.trim() !== '').slice(0, 6)
+          : [];
 
-        const result = await analyzeSession(ctx, sessionId, tags, fallbackRoute);
+        const result = await analyzeSession(ctx, sessionId, tags, fallbackRoute, avoid);
         if (!result.ok) {
           const body = { ok: false, error: result.error };
           if (result.raw !== undefined) body.raw = result.raw;

@@ -3,7 +3,7 @@
  *
  * 两个座位：
  *   - `sidebar.workspaces.session.menu.item`：会话行「…」菜单里的一项「智能重命名」；
- *   - `shell.overlay`：确认对话框（预填 `分类 · 主题`，可改分类、可新建 tag）。
+ *   - `shell.overlay`：命名工作台（分类 chips / 主题输入 + 标题预览 / AI 建议与换一批）。
  *
  * 数据与改名都走宿主已有路由，不新增后端：
  *   POST /api/session/list   {args:{_request:{}}}
@@ -31,8 +31,101 @@ window.__ModuleLoader__.load({
     const OVERLAY_SLOT = 'shell.overlay';
     const TAGS_KEY = 'dsh-smart-rename.tags.v1';
 
-    /** 出厂 tag：沿用之前人工整理时用的分类。 */
-    const DEFAULT_TAGS = ['文档', 'DSH', '插件', '维护', '空会话', '代码', '调研'];
+    /** 界面语言：浏览器语言以 zh 开头用中文，读不到语言时也按中文。 */
+    const NAV_LANG = typeof navigator !== 'undefined' ? String(navigator.language || '') : '';
+    const LOCALE = NAV_LANG === '' || /^zh/i.test(NAV_LANG) ? 'zh' : 'en';
+
+    /** 分类的内部 key 与各语言下的名字：规则与出厂 tag 都从这里取名。 */
+    const CATEGORY_LABELS = {
+      zh: { docs: '文档', dsh: 'DSH', plugin: '插件', maintenance: '维护', empty: '空会话', code: '代码', research: '调研', other: '其他' },
+      en: { docs: 'Docs', dsh: 'DSH', plugin: 'Plugins', maintenance: 'Maintenance', empty: 'Empty', code: 'Code', research: 'Research', other: 'Other' },
+    };
+
+    /** 界面文案：除中文外一律走英文，不做第三种语言的猜测。 */
+    const TEXT = {
+      zh: {
+        menu: '智能重命名',
+        menuBusy: '正在分析对话…',
+        notAnalyzed: (error) => '（未做模型分析：' + error + '）',
+        hostUnreachable: '连不上宿主：',
+        httpFailed: (status) => '请求失败（HTTP ' + status + '）',
+        callFailed: '调用失败',
+        readFailed: '读取会话信息失败',
+        untitled: '未命名',
+        deletable: '可删',
+        emptyNamed: '空会话（没有用户消息），用目录名标记出处',
+        emptyPlain: '空会话（没有用户消息），可直接删',
+        matched: (name) => '命中分类「' + name + '」',
+        noMatch: '没有命中规则，归到「其他」',
+        dialogTitle: '智能重命名',
+        sourceLlm: '模型分析',
+        sourceRules: '本地规则',
+        fallbackReason: '先分类，再命名',
+        currentLabel: '当前：',
+        sectionCategory: '分类',
+        newTagPlaceholder: 'tag 名称',
+        addTag: '＋ 新建 tag',
+        sectionTopic: '主题',
+        topicPlaceholder: '这一段到底在做啥？',
+        finalTitleLabel: '最终标题：',
+        emptyTopic: '（还没填主题）',
+        sectionSuggestions: 'AI 建议',
+        refresh: '换一批',
+        refreshing: '重新分析中…',
+        emptyCandidates: '暂无建议，点「换一批」试试。',
+        cancel: '取消',
+        save: '保存',
+        saving: '保存中…',
+        needTopic: '先写个主题',
+        noNewSuggestions: '没拿到新的建议',
+      },
+      en: {
+        menu: 'Smart rename',
+        menuBusy: 'Analyzing conversation…',
+        notAnalyzed: (error) => ' (no model analysis: ' + error + ')',
+        hostUnreachable: 'Cannot reach the host: ',
+        httpFailed: (status) => 'Request failed (HTTP ' + status + ')',
+        callFailed: 'Call failed',
+        readFailed: 'Could not read this session',
+        untitled: 'Untitled',
+        deletable: 'Deletable',
+        emptyNamed: 'Empty session (no user messages); the folder name marks where it came from',
+        emptyPlain: 'Empty session (no user messages); safe to delete',
+        matched: (name) => 'Matched category "' + name + '"',
+        noMatch: 'No rule matched, filed under "Other"',
+        dialogTitle: 'Smart rename',
+        sourceLlm: 'Model analysis',
+        sourceRules: 'Local rules',
+        fallbackReason: 'Pick a category, then a topic',
+        currentLabel: 'Current: ',
+        sectionCategory: 'Category',
+        newTagPlaceholder: 'tag name',
+        addTag: '＋ New tag',
+        sectionTopic: 'Topic',
+        topicPlaceholder: 'What was this session really about?',
+        finalTitleLabel: 'Final title: ',
+        emptyTopic: '(no topic yet)',
+        sectionSuggestions: 'AI suggestions',
+        refresh: 'Another batch',
+        refreshing: 'Re-analyzing…',
+        emptyCandidates: 'No suggestions yet — try "Another batch".',
+        cancel: 'Cancel',
+        save: 'Save',
+        saving: 'Saving…',
+        needTopic: 'Add a topic first',
+        noNewSuggestions: 'No new suggestions came back',
+      },
+    };
+
+    const TX = TEXT[LOCALE];
+
+    /** 取某个分类在当前语言下的名字。 */
+    function categoryLabel(key) {
+      return CATEGORY_LABELS[LOCALE][key] || key;
+    }
+
+    /** 出厂 tag：沿用之前人工整理时用的分类，按界面语言取名。 */
+    const DEFAULT_TAGS = ['docs', 'dsh', 'plugin', 'maintenance', 'empty', 'code', 'research'].map(categoryLabel);
 
     /** 宿主分析端点：读会话内容并调一次模型。 */
     const SUGGEST_ENDPOINT = '/api/dsh-session-smart-rename/suggest';
@@ -42,12 +135,17 @@ window.__ModuleLoader__.load({
     const SUGGESTION_TTL_MS = 5 * 60 * 1000;
 
     /**
-     * 请宿主按对话内容分析，返回分类建议。
+     * 请宿主按对话内容分析，返回若干候选。
      * 失败时返回 { supported:false, error }，由调用方退回本地规则。
+     * @param sessionId - 目标会话。
+     * @param tags - 候选分类，交给模型参考。
+     * @param options - { force: 跳过缓存（换一批）, avoid: 上一批已给过的标题 }。
      */
-    async function suggestFromHost(sessionId, tags) {
+    async function suggestFromHost(sessionId, tags, options) {
+      const force = Boolean(options && options.force);
+      const avoid = Array.isArray(options && options.avoid) ? options.avoid : [];
       const cached = suggestionCache.get(sessionId);
-      if (cached !== undefined && Date.now() - cached.at < SUGGESTION_TTL_MS) {
+      if (!force && cached !== undefined && Date.now() - cached.at < SUGGESTION_TTL_MS) {
         return cached.value;
       }
       let response;
@@ -55,10 +153,10 @@ window.__ModuleLoader__.load({
         response = await fetch(SUGGEST_ENDPOINT, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ sessionId, tags }),
+          body: JSON.stringify({ sessionId, tags, avoid }),
         });
       } catch (error) {
-        return { supported: false, error: '连不上宿主：' + String((error && error.message) || error) };
+        return { supported: false, error: TX.hostUnreachable + String((error && error.message) || error) };
       }
       let body = null;
       try {
@@ -69,17 +167,20 @@ window.__ModuleLoader__.load({
       if (!response.ok || body === null || body.ok !== true) {
         return { supported: false, error: (body && body.error) || ('HTTP ' + response.status) };
       }
+      const candidates = normalizeSuggestions(body);
+      const first = candidates[0] || { category: '', theme: '', suggested: '', reason: '' };
       const value = {
         supported: true,
         source: body.source === 'llm' ? 'llm' : 'rules',
         blank: body.blank === true,
-        category: body.category,
-        theme: body.theme || body.title || '',
-        suggested: body.suggested,
-        reason: body.reason,
+        category: body.category || first.category,
+        theme: body.theme || body.title || first.theme,
+        suggested: body.suggested || first.suggested,
+        reason: body.reason || first.reason,
         model: body.model || null,
+        candidates,
       };
-      suggestionCache.set(sessionId, { at: Date.now(), value });
+      if (!force) suggestionCache.set(sessionId, { at: Date.now(), value });
       return value;
     }
 
@@ -113,13 +214,13 @@ window.__ModuleLoader__.load({
         }),
       });
       if (!response.ok) {
-        throw new Error('请求失败（HTTP ' + response.status + '）');
+        throw new Error(TX.httpFailed(response.status));
       }
       const body = await response.json();
       const result = body && body.result;
       if (!result || result.ok !== true) {
         const failure = result && result.error;
-        throw new Error((failure && (failure.message || failure.code)) || '调用失败');
+        throw new Error((failure && (failure.message || failure.code)) || TX.callFailed);
       }
       return result.value;
     }
@@ -152,28 +253,28 @@ window.__ModuleLoader__.load({
     /** 分类规则：按顺序命中，先具体后宽泛。 */
     const RULES = [
       {
-        category: '文档',
+        key: 'docs',
         keywords: /推荐信|letter|handout|slides?|课件|讲义|论文|文献|文档|报告|docx|pptx|pdf|提交|submission|模板|template/i,
         cwd: /学生推荐信|Handouts|Slides|Submissions|Letters|Templates|Documents\/Work/i,
       },
       {
-        category: '维护',
+        key: 'maintenance',
         keywords: /清理|整理|重命名|磁盘|临时|tmp|垃圾|归档|备份|体检|审查/i,
       },
       {
-        category: '插件',
+        key: 'plugin',
         keywords: /插件|plugin|市场|market|索引|index|opencode|drawio|mcp\s*server|扩展/i,
       },
       {
-        category: 'DSH',
+        key: 'dsh',
         keywords: /dsh|harness|mcp|agents|profile|配置|设置|会话|模型|token|用量/i,
       },
       {
-        category: '代码',
+        key: 'code',
         keywords: /代码|实现|重构|修复|bug|测试|仓库|git|编译|构建|脚本|函数|接口/i,
       },
       {
-        category: '调研',
+        key: 'research',
         keywords: /调研|研究|对比|方案|资料|搜索|查找|分析|评估|选型/i,
       },
     ];
@@ -181,12 +282,6 @@ window.__ModuleLoader__.load({
     /** 去掉已有的「分类 · 」前缀。 */
     function stripCategory(text) {
       return String(text || '').replace(/^[^·\n]{1,10} · /, '').trim();
-    }
-
-    /** 取「分类 · 」里的分类。 */
-    function categoryOf(text) {
-      const match = String(text || '').match(/^([^·\n]{1,10}) · /);
-      return match ? match[1].trim() : '';
     }
 
     /** 标题像占位符时不算主题（空会话被复用后会留下这种旧名）。 */
@@ -206,7 +301,7 @@ window.__ModuleLoader__.load({
       if (prompt) return clampText(prompt, 20);
       const base = cwdBaseName(info.cwd);
       if (base) return clampText(base, 20);
-      return title ? clampText(title, 24) : '未命名';
+      return title ? clampText(title, 24) : TX.untitled;
     }
 
     /** 按字符上限截断，尽量不切断词。 */
@@ -221,28 +316,26 @@ window.__ModuleLoader__.load({
       if (info.blank) {
         const base = cwdBaseName(info.cwd);
         const named = base && base !== 'default-workspace';
-        const theme = named ? clampText(base, 20) : '可删';
+        const theme = named ? clampText(base, 20) : TX.deletable;
+        const empty = categoryLabel('empty');
         return {
-          category: '空会话',
+          category: empty,
           theme,
-          suggested: '空会话 · ' + theme,
-          reason: named ? '空会话（没有用户消息），用目录名标记出处' : '空会话（没有用户消息），可直接删',
+          suggested: composeTitle(empty, theme),
+          reason: named ? TX.emptyNamed : TX.emptyPlain,
         };
       }
       const haystack = [info.title, stripCategory(info.prompt), info.cwd].filter(Boolean).join(' \n ');
       for (const rule of RULES) {
         if (rule.keywords.test(haystack) || (rule.cwd && rule.cwd.test(info.cwd))) {
           const theme = deriveTheme(info);
-          return {
-            category: rule.category,
-            theme,
-            suggested: rule.category + ' · ' + theme,
-            reason: '命中分类「' + rule.category + '」',
-          };
+          const category = categoryLabel(rule.key);
+          return { category, theme, suggested: composeTitle(category, theme), reason: TX.matched(category) };
         }
       }
       const theme = deriveTheme(info);
-      return { category: '其他', theme, suggested: '其他 · ' + theme, reason: '没有命中规则，归到「其他」' };
+      const other = categoryLabel('other');
+      return { category: other, theme, suggested: composeTitle(other, theme), reason: TX.noMatch };
     }
 
     /* ------------------------------------------------------------------ *
@@ -369,6 +462,63 @@ window.__ModuleLoader__.load({
       cursor: 'pointer',
     });
 
+    const sectionLabelStyle = {
+      marginTop: '14px',
+      marginBottom: '6px',
+      fontSize: '11px',
+      fontWeight: 600,
+      letterSpacing: '0.04em',
+      opacity: 0.55,
+    };
+
+    const newTagInputStyle = {
+      width: '96px',
+      padding: '3px 8px',
+      borderRadius: '999px',
+      border: '1px solid var(--dsw-alias-brand-l1, #4d6bfe)',
+      background: 'transparent',
+      color: 'inherit',
+      font: 'inherit',
+      fontSize: '12px',
+      outline: 'none',
+    };
+
+    const previewStyle = {
+      marginTop: '8px',
+      fontSize: '12px',
+      opacity: 0.6,
+    };
+
+    const previewTitleStyle = {
+      color: 'var(--dsw-alias-text-l1, #222)',
+      opacity: 1,
+      fontWeight: 500,
+    };
+
+    const linkButtonStyle = {
+      padding: '0',
+      border: 'none',
+      background: 'transparent',
+      color: 'var(--dsw-alias-brand-l1, #4d6bfe)',
+      font: 'inherit',
+      fontSize: '11px',
+      cursor: 'pointer',
+      opacity: 0.85,
+    };
+
+    const candidateRowStyle = (active) => ({
+      display: 'block',
+      width: '100%',
+      textAlign: 'left',
+      padding: '7px 10px',
+      borderRadius: '8px',
+      border: '1px solid ' + (active ? 'var(--dsw-alias-brand-l1, #4d6bfe)' : 'var(--dsw-alias-border-l1, rgba(0,0,0,0.12))'),
+      background: active ? 'rgba(77,107,254,0.08)' : 'transparent',
+      color: 'inherit',
+      font: 'inherit',
+      cursor: 'pointer',
+    });
+
     const buttonStyle = (primary, disabled) => ({
       padding: '6px 14px',
       borderRadius: '8px',
@@ -406,25 +556,30 @@ window.__ModuleLoader__.load({
               sessionId,
               sourceTitle: info.title || displayTitle || '',
               blank: analysis.blank,
-              category: analysis.category,
-              theme: analysis.theme,
+              category: analysis.category || '',
+              topic: analysis.theme || '',
+              candidates: analysis.candidates,
               reason: analysis.reason,
-              suggested: analysis.suggested,
               source: analysis.source,
               model: analysis.model,
               error: null,
             });
           } else {
             const verdict = classify(info);
-            const note = analysis && analysis.error && !info.blank ? '（未做模型分析：' + analysis.error + '）' : '';
+            const note = analysis && analysis.error && !info.blank ? TX.notAnalyzed(analysis.error) : '';
             setPending({
               sessionId,
               sourceTitle: info.title || displayTitle || '',
               blank: info.blank,
               category: verdict.category,
-              theme: verdict.theme,
+              topic: verdict.theme,
+              candidates: [{
+                category: verdict.category,
+                theme: verdict.theme,
+                suggested: verdict.suggested,
+                reason: verdict.reason,
+              }],
               reason: verdict.reason + note,
-              suggested: verdict.suggested,
               source: 'rules',
               error: null,
             });
@@ -434,10 +589,10 @@ window.__ModuleLoader__.load({
             sessionId,
             sourceTitle: displayTitle || '',
             blank: false,
-            category: '其他',
-            theme: '',
-            reason: '读取会话信息失败',
-            suggested: '',
+            category: categoryLabel('other'),
+            topic: '',
+            candidates: [],
+            reason: TX.readFailed,
             source: 'rules',
             error: String((error && error.message) || error),
           });
@@ -446,7 +601,7 @@ window.__ModuleLoader__.load({
         }
       }, [sessionId, displayTitle, busy]);
 
-      const label = busy ? '正在分析对话…' : '智能重命名';
+      const label = busy ? TX.menuBusy : TX.menu;
 
       if (prim && typeof prim.MenuItemButton === 'function') {
         const icon = prim.IconEditOutlineRegular ? h(prim.IconEditOutlineRegular, {}) : undefined;
@@ -463,32 +618,68 @@ window.__ModuleLoader__.load({
      * 确认对话框
      * ------------------------------------------------------------------ */
 
+    /** 分类 + 主题拼成标题；缺一半就只留有的那半。 */
+    function composeTitle(category, topic) {
+      const left = String(category || '').trim();
+      const right = String(topic || '').trim();
+      if (left && right) return left + ' · ' + right;
+      return left || right;
+    }
+
+    /** 把宿主返回值归一成候选数组：新形状 {candidates} 与旧单条形状都认。 */
+    function normalizeSuggestions(body) {
+      const source = body && Array.isArray(body.candidates) && body.candidates.length > 0
+        ? body.candidates
+        : [body];
+      const out = [];
+      for (const item of source) {
+        if (item === null || typeof item !== 'object') continue;
+        const category = typeof item.category === 'string' ? item.category.trim() : '';
+        const theme = String(item.theme || item.title || '').trim();
+        if (!theme) continue;
+        out.push({
+          category,
+          theme,
+          suggested: composeTitle(category, theme),
+          reason: String(item.reason || '').trim(),
+        });
+        if (out.length === 3) break;
+      }
+      return out;
+    }
+
     function SmartRenameDialog() {
       const pending = usePending();
-      const [value, setValue] = useState('');
+      const [category, setCategory] = useState('');
+      const [topic, setTopic] = useState('');
       const [tags, setTags] = useState(() => loadTags());
+      const [candidates, setCandidates] = useState([]);
+      const [refreshing, setRefreshing] = useState(false);
       const [adding, setAdding] = useState(false);
       const [newTag, setNewTag] = useState('');
       const [saving, setSaving] = useState(false);
       const [error, setError] = useState(null);
-      const inputRef = useRef(null);
+      const topicRef = useRef(null);
       const tagInputRef = useRef(null);
 
       /* 每次打开重置草稿 */
       useEffect(() => {
         if (!pending) return;
-        setValue(pending.suggested || pending.sourceTitle || '');
+        setCategory(pending.category || '');
+        setTopic(pending.topic || '');
+        setCandidates(Array.isArray(pending.candidates) ? pending.candidates : []);
         setError(pending.error || null);
         setSaving(false);
+        setRefreshing(false);
         setAdding(false);
         setNewTag('');
       }, [pending]);
 
-      /* 打开时聚焦并全选，方便直接改 */
+      /* 打开时聚焦主题框并全选，方便直接改 */
       useEffect(() => {
         if (!pending) return;
         const timer = setTimeout(() => {
-          const node = inputRef.current;
+          const node = topicRef.current;
           if (node) {
             try {
               node.focus();
@@ -535,38 +726,38 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener('keydown', onKeyDown, true);
       }, [pending, close]);
 
-      const applyCategory = useCallback((category) => {
-        setValue((previous) => {
-          const theme = stripCategory(previous);
-          return theme ? category + ' · ' + theme : category + ' · ';
-        });
+      /* 点候选：整条替换分类与主题，光标留在主题框 */
+      const applyCandidate = useCallback((candidate) => {
+        setCategory(candidate.category || '');
+        setTopic(candidate.theme || '');
+        const node = topicRef.current;
+        if (node) {
+          try {
+            node.focus();
+          } catch (focusError) {
+            /* ignore */
+          }
+        }
       }, []);
 
       const commitNewTag = useCallback(() => {
         const name = newTag.trim();
-        if (!name) {
-          setAdding(false);
-          setNewTag('');
-          return;
-        }
+        setAdding(false);
+        setNewTag('');
+        if (!name) return;
         setTags((previous) => {
           const next = previous.includes(name) ? previous : previous.concat([name]);
           saveTags(next);
           return next;
         });
-        setValue((previous) => {
-          const theme = stripCategory(previous);
-          return theme ? name + ' · ' + theme : name + ' · ';
-        });
-        setAdding(false);
-        setNewTag('');
+        setCategory(name);
       }, [newTag]);
 
       const save = useCallback(async () => {
         if (!pending) return;
-        const title = value.trim();
+        const title = composeTitle(category, topic);
         if (!title) {
-          setError('名字不能为空');
+          setError(TX.needTopic);
           return;
         }
         setSaving(true);
@@ -579,12 +770,34 @@ window.__ModuleLoader__.load({
           setError(String((failure && failure.message) || failure));
           setSaving(false);
         }
-      }, [pending, value]);
+      }, [pending, category, topic]);
+
+      /* 换一批：绕过缓存，把这一批已经给过的题名带去，让模型别重复 */
+      const refresh = useCallback(async () => {
+        if (!pending || refreshing) return;
+        setRefreshing(true);
+        setError(null);
+        try {
+          const analysis = await suggestFromHost(pending.sessionId, loadTags(), {
+            force: true,
+            avoid: candidates.map((candidate) => candidate.suggested),
+          });
+          if (analysis && analysis.supported && analysis.candidates.length > 0) {
+            setCandidates(analysis.candidates);
+          } else {
+            setError((analysis && analysis.error) || TX.noNewSuggestions);
+          }
+        } catch (failure) {
+          setError(String((failure && failure.message) || failure));
+        } finally {
+          setRefreshing(false);
+        }
+      }, [pending, refreshing, candidates]);
 
       if (!pending) return null;
 
-      const activeCategory = categoryOf(value);
-      const disabled = saving || value.trim() === '';
+      const finalTitle = composeTitle(category, topic);
+      const disabled = saving || finalTitle === '';
 
       return h(
         'div',
@@ -596,41 +809,33 @@ window.__ModuleLoader__.load({
         },
         h(
           'div',
-          { style: cardStyle, role: 'dialog', 'aria-label': '智能重命名' },
-          h('div', { style: { fontSize: '15px', fontWeight: 600, marginBottom: '4px' } }, '智能重命名'),
+          { style: cardStyle, role: 'dialog', 'aria-label': TX.dialogTitle },
           h(
             'div',
-            { style: { opacity: 0.6, fontSize: '12px', marginBottom: '10px', lineHeight: 1.5 } },
-            (pending.source === 'llm' ? '模型分析 · ' : pending.source === 'rules' ? '本地规则 · ' : '')
-              + (pending.reason || '先分类，再命名'),
+            { style: { display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '2px' } },
+            h('div', { style: { fontSize: '15px', fontWeight: 600 } }, TX.dialogTitle),
+            h('div', { style: { opacity: 0.5, fontSize: '11px' } }, pending.source === 'llm' ? TX.sourceLlm : TX.sourceRules),
+          ),
+          h(
+            'div',
+            { style: { opacity: 0.6, fontSize: '12px', marginBottom: '14px', lineHeight: 1.5 } },
+            pending.reason || TX.fallbackReason,
             pending.sourceTitle
-              ? h('div', { style: { marginTop: '2px', opacity: 0.85 } }, '当前：' + pending.sourceTitle)
+              ? h('div', { style: { marginTop: '2px', opacity: 0.85 } }, TX.currentLabel + pending.sourceTitle)
               : null,
           ),
-          h('input', {
-            ref: inputRef,
-            style: inputStyle,
-            value,
-            spellCheck: false,
-            onChange: (event) => setValue(event.target.value),
-            onKeyDown: (event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                save();
-              }
-            },
-          }),
+          h('div', { style: sectionLabelStyle }, TX.sectionCategory),
           h(
             'div',
-            { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '10px' } },
+            { style: { display: 'flex', flexWrap: 'wrap', gap: '6px' } },
             ...tags.map((tag) =>
               h(
                 'button',
                 {
                   key: tag,
                   type: 'button',
-                  style: chipStyle(activeCategory === tag),
-                  onClick: () => applyCategory(tag),
+                  style: chipStyle(category === tag),
+                  onClick: () => setCategory(category === tag ? '' : tag),
                 },
                 tag,
               ),
@@ -638,19 +843,9 @@ window.__ModuleLoader__.load({
             adding
               ? h('input', {
                   ref: tagInputRef,
-                  style: {
-                    width: '96px',
-                    padding: '3px 8px',
-                    borderRadius: '999px',
-                    border: '1px solid var(--dsw-alias-brand-l1, #4d6bfe)',
-                    background: 'transparent',
-                    color: 'inherit',
-                    font: 'inherit',
-                    fontSize: '12px',
-                    outline: 'none',
-                  },
+                  style: newTagInputStyle,
                   value: newTag,
-                  placeholder: 'tag 名称',
+                  placeholder: TX.newTagPlaceholder,
                   onChange: (event) => setNewTag(event.target.value),
                   onKeyDown: (event) => {
                     if (event.key === 'Enter') {
@@ -664,28 +859,70 @@ window.__ModuleLoader__.load({
                   },
                   onBlur: commitNewTag,
                 })
-              : h(
-                  'button',
-                  {
-                    type: 'button',
-                    style: chipStyle(false),
-                    onClick: () => setAdding(true),
-                  },
-                  '＋ 新建 tag',
-                ),
+              : h('button', { type: 'button', style: chipStyle(false), onClick: () => setAdding(true) }, TX.addTag),
           ),
-          error
-            ? h(
+          h('div', { style: sectionLabelStyle }, TX.sectionTopic),
+          h('input', {
+            ref: topicRef,
+            style: inputStyle,
+            value: topic,
+            spellCheck: false,
+            placeholder: TX.topicPlaceholder,
+            onChange: (event) => setTopic(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter' && !event.nativeEvent?.isComposing) {
+                event.preventDefault();
+                save();
+              }
+            },
+          }),
+          h(
+            'div',
+            { style: previewStyle },
+            TX.finalTitleLabel,
+            h('span', { style: finalTitle ? previewTitleStyle : { opacity: 0.45 } }, finalTitle || TX.emptyTopic),
+          ),
+          h(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '14px' } },
+            h('div', { style: { ...sectionLabelStyle, marginTop: 0, marginBottom: 0 } }, TX.sectionSuggestions),
+            h(
+              'button',
+              { type: 'button', style: linkButtonStyle, onClick: refresh, disabled: refreshing },
+              refreshing ? TX.refreshing : TX.refresh,
+            ),
+          ),
+          candidates.length === 0
+            ? h('div', { style: { fontSize: '12px', opacity: 0.5, lineHeight: 1.6 } }, TX.emptyCandidates)
+            : h(
                 'div',
-                { style: { marginTop: '10px', fontSize: '12px', color: '#e5484d', lineHeight: 1.5 } },
-                error,
-              )
+                { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
+                ...candidates.map((candidate, index) =>
+                  h(
+                    'button',
+                    {
+                      key: candidate.suggested + index,
+                      type: 'button',
+                      style: candidateRowStyle(
+                        candidate.category === category && candidate.theme === topic,
+                      ),
+                      onClick: () => applyCandidate(candidate),
+                    },
+                    h('div', { style: { fontSize: '13px', fontWeight: 500 } }, candidate.suggested),
+                    candidate.reason
+                      ? h('div', { style: { fontSize: '11px', opacity: 0.62, marginTop: '2px', lineHeight: 1.5 } }, candidate.reason)
+                      : null,
+                  ),
+                ),
+              ),
+          error
+            ? h('div', { style: { marginTop: '10px', fontSize: '12px', color: '#e5484d', lineHeight: 1.5 } }, error)
             : null,
           h(
             'div',
             { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' } },
-            h('button', { type: 'button', style: buttonStyle(false, saving), onClick: close }, '取消'),
-            h('button', { type: 'button', style: buttonStyle(true, disabled), onClick: save, disabled }, saving ? '保存中…' : '保存'),
+            h('button', { type: 'button', style: buttonStyle(false, saving), onClick: close }, TX.cancel),
+            h('button', { type: 'button', style: buttonStyle(true, disabled), onClick: save, disabled }, saving ? TX.saving : TX.save),
           ),
         ),
       );

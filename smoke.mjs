@@ -20,6 +20,10 @@ const session = {
 let capturedRoute;
 let capturedTool;
 let llmCalls = 0;
+let capturedUserText = '';
+let capturedMaxTokens = 0;
+let rejectBigBudget = false;
+let prepareAttempts = 0;
 const renamed = [];
 
 const sessionTitle = {
@@ -55,7 +59,11 @@ const ctx = {
   },
   llm: {
     async prepareCall(route, signal, customize) {
+      prepareAttempts += 1;
       console.log('prepareCall route:', JSON.stringify(route));
+      if (rejectBigBudget && route.maxTokens > 700) {
+        throw new Error('max_tokens 超出该模型上限');
+      }
       return {
         config: { ...route },
         async *stream(options) {
@@ -63,7 +71,18 @@ const ctx = {
           if (typeof customize === 'function') customize({}, { reasoning: { efforts: [{ id: 'low' }] } });
           console.log('system 长度:', options.system.length, '| purpose:', options.purpose);
           console.log('user 提示:', options.messages[0].content[0].text.slice(0, 160).replace(/\n/g, ' | '));
-          yield { type: 'text-delta', text: '{"category":"文档","title":"推荐信排版导出 PDF","reason":"会话在按模板排版并导出推荐信"}' };
+          capturedUserText = options.messages[0].content[0].text;
+          capturedMaxTokens = route.maxTokens;
+          yield {
+            type: 'text-delta',
+            text: JSON.stringify({
+              candidates: [
+                { category: '文档', title: '推荐信排版导出 PDF', reason: '会话在按模板排版并导出推荐信' },
+                { category: '文档', title: 'XJTLU 模板推荐信', reason: '提到了具体模板' },
+                { category: '其他', title: '推荐信 PDF 交付', reason: '强调交付物' },
+              ],
+            }),
+          };
         },
       };
     },
@@ -100,12 +119,36 @@ function makeResponse() {
   };
 }
 
-/* 1) 浏览器确认框：HTTP 路由 */
+/* 1) 浏览器确认框：HTTP 路由，应拿到 3 条候选 */
 const suggested = makeResponse();
 await capturedRoute.handler(makeRequest({ sessionId: 's1', tags: ['文档', 'DSH'] }), suggested);
 console.log('路由:', suggested.state.status, JSON.stringify(suggested.state.body));
-if (suggested.state.status !== 200 || suggested.state.body.suggested !== '文档 · 推荐信排版导出 PDF') {
-  console.error('FAIL: 期望 200 且 suggested 正确');
+const routeBody = suggested.state.body;
+if (routeBody.suggested !== '文档 · 推荐信排版导出 PDF') {
+  console.error('FAIL: 期望单条字段仍向后兼容');
+  process.exit(1);
+}
+if (!Array.isArray(routeBody.candidates) || routeBody.candidates.length !== 3) {
+  console.error('FAIL: 期望返回 3 条候选');
+  process.exit(1);
+}
+if (routeBody.category !== '文档' || routeBody.candidates[1].suggested !== '文档 · XJTLU 模板推荐信') {
+  console.error('FAIL: 候选内容不对');
+  process.exit(1);
+}
+if (capturedMaxTokens !== 2048) {
+  console.error('FAIL: 首轮预算应为 2048，实际 ' + capturedMaxTokens);
+  process.exit(1);
+}
+
+/* 1b) 换一批：上一批题名要进提示词，且不该重复问同样的内容 */
+const again = makeResponse();
+await capturedRoute.handler(
+  makeRequest({ sessionId: 's1', tags: ['文档'], avoid: ['文档 · 推荐信排版导出 PDF'] }),
+  again,
+);
+if (again.state.status !== 200 || !capturedUserText.includes('不要与这些已给过的标题重复')) {
+  console.error('FAIL: 换一批应把已给过的标题带进提示词');
   process.exit(1);
 }
 
@@ -161,6 +204,18 @@ try {
 }
 if (!threw) {
   console.error('FAIL: 没有归属会话时应抛错');
+  process.exit(1);
+}
+
+/* 6) 网关嫌 2048 太大 → 自动退到 700 重试一次 */
+rejectBigBudget = true;
+const beforeRetry = prepareAttempts;
+const fallback = makeResponse();
+await capturedRoute.handler(makeRequest({ sessionId: 's1', tags: ['文档'] }), fallback);
+rejectBigBudget = false;
+console.log('预算回退:', fallback.state.status, '| prepareCall 次数 +', prepareAttempts - beforeRetry);
+if (fallback.state.status !== 200 || prepareAttempts - beforeRetry !== 2 || capturedMaxTokens !== 700) {
+  console.error('FAIL: 预算被拒时应退到 700 重试一次');
   process.exit(1);
 }
 

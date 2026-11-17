@@ -1,12 +1,13 @@
 {
   "name": "dsh-session-smart-rename",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "type": "module",
-  "description": "Smart session rename for DSH: a sidebar action and a model-facing smart_rename_session tool, both naming sessions as \"category · topic\".",
+  "description": "Smart session rename for DSH: a bilingual naming workbench (category chips, topic input, three AI suggestions) plus a model-facing smart_rename_session tool, both naming sessions as \"category · topic\".",
   "license": "MIT",
   "author": "SonettoGu14",
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.19.0",
+    "dsh": ">=0.2.2-0 <0.3.0-0"
   },
   "keywords": [
     "dsh",
@@ -35,6 +36,7 @@
     "client.js",
     "cordis.patch.yml",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE"
   ],
   "dsh": {

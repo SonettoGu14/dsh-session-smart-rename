@@ -6,23 +6,24 @@
 
 DSH（DeepSeek Harness）Web GUI 插件：把会话标题命名成 `分类 · 主题`，两个入口共用同一段分析逻辑。
 
-- **人侧**：侧边栏会话行「…」→ 智能重命名 → 确认框，可改字、换分类、新建 tag；
+- **人侧**：侧边栏会话行「…」→ 智能重命名 → 命名工作台：上层分类 chips（可新建 tag）、中层主题输入 + 「分类 · 主题」实时预览、下层 3 条 AI 建议（点选填入，可「换一批」）；
 - **模型侧**：工具 `smart_rename_session`，agent 可自己改名；省略 `title` 时插件分析对话自动命名，给了 `title` 就只负责钉住。
 
 两条路都写 `source.kind: "user"` 的标题，后写的覆盖先写的（人永远有最终决定权）。
 
-已发布：npm [`dsh-session-smart-rename`](https://www.npmjs.com/package/dsh-session-smart-rename)（当前 `0.2.0`）；已收录进 [`awesome-dsh-plugin`](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（PR #12513，2026-11-07 合并）。
+已发布：npm [`dsh-session-smart-rename`](https://www.npmjs.com/package/dsh-session-smart-rename)（当前 `0.3.1`）；已收录进 [`awesome-dsh-plugin`](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（PR #12513，2026-11-07 合并）。
 
 ## 仓库结构
 
 | 路径 | 作用 |
 | --- | --- |
 | `index.js` | 宿主半体：`POST /api/dsh-session-smart-rename/suggest` 路由、`smart_rename_session` 工具注册、读会话/调模型/冷会话磁盘回退 |
-| `client.js` | 浏览器半体：`sidebar.workspaces.session.menu.item` 菜单项 + `shell.overlay` 确认框；无构建步骤，`window.__ModuleLoader__.load` 包一层 |
+| `client.js` | 浏览器半体：`sidebar.workspaces.session.menu.item` 菜单项 + `shell.overlay` 命名工作台；状态拆成 category / topic，标题由 `composeTitle()` 合成；无构建步骤，`window.__ModuleLoader__.load` 包一层 |
 | `cordis.patch.yml` | 插入宿主组合的一行（`id: session-smart-rename`，`name: dsh-session-smart-rename`） |
 | `smoke.mjs` | 离线冒烟：假 ctx 跑路由、工具自动命名、工具直接命名、两种报错 |
 | `package.json` | `dsh.bundle` + `dsh.client` 清单；`files` 决定发布内容 |
-| `README.md` | 面向用户：安装、两个入口、实现、限制 |
+| `README.md` | 面向用户（英文，npm/GitHub 主入口）：安装、两个入口、实现、兼容性、本地化、限制 |
+| `README.zh-CN.md` | 中文版 README，与英文版互链，内容对齐 |
 
 ## 宿主契约（已在本机 DSH 上核对，不要凭猜）
 
@@ -30,7 +31,7 @@ DSH（DeepSeek Harness）Web GUI 插件：把会话标题命名成 `分类 · �
 - 路由：`ctx.effect(() => ctx.webServer.register({ kind: 'exact', path, handler }), '说明')`，必须把 disposer 包在 `ctx.effect` 里。
 - 标题写入：`ctx.get('sessionTitle').rename(session, title)`。它要求 **session 处于 live 状态**（内部校验 `ctx.sessions.get(session.id) === session`），会规范化、空标题抛 `SessionTitleInvalidError`，并 append `session/title`（`source: { kind: 'user' }`），返回 `{ title, eventSeq }`。**不要自己 append `session/title` 事件。**
 - 工具注册：`ctx.tools.register({ name, description, parameters, output: { schema, render }, execute(args, exec), timeoutMs, isConcurrencySafe })`。当前会话从 `exec.agent?.session` 取；显式 `session_id` 走 `ctx.sessions.get()`，未加载直接报错。
-- 模型调用：`ctx.llm.prepareCall({ provider, model, maxTokens: 700 }, signal, (controls, model) => ...)`；路由取会话最后一条 `request/header` 的 `data.header.config`，读不到时回落 `deepseek-official` / `deepseek-flash`。标题类短任务**只取最低推理档**（`model.reasoning.efforts[0].id`），否则思考会吃光 700 token 预算。
+- 模型调用：`ctx.llm.prepareCall({ provider, model, maxTokens: 2048 }, signal, (controls, model) => ...)`；路由取会话最后一条 `request/header` 的 `data.header.config`，读不到时回落 `deepseek-official` / `deepseek-flash`。标题类短任务用 `pickEffort()` **尽量关掉推理**（模型声明了 off/none 就用它），否则退最低档——三条候选 + 思考共吃 2048；网关嫌大时 `callModel()` 退 700 重试一次（被 abort 不重试）。
 - 浏览器改名的 RPC：`POST /api/session/rename`，body 为 `{type:'client-request', rpcId, method:'session/rename', payload:{args:{request:{sessionId,title}}}}`。
 
 ## 冷会话
@@ -55,7 +56,7 @@ node --check index.js && node --check client.js
 node smoke.mjs
 ```
 
-`smoke.mjs` 应输出 `SMOKE OK`，且覆盖：路由 200、未知会话 404、工具自动命名（`source: "analyzed"`）、工具直接命名（`source: "model"`，且不再调模型）、两种报错。
+`smoke.mjs` 应输出 `SMOKE OK`，且覆盖：路由 200 且返回 3 条 `candidates`（单条字段仍向后兼容）、换一批把 `avoid` 写进提示词、预算回退（2048 被拒 → 700 重试一次）、未知会话 404、工具自动命名（`source: "analyzed"`）、工具直接命名（`source: "model"`，且不再调模型）、两种报错。
 
 真机检查（改宿主半体后必须做一次）：
 
@@ -67,7 +68,7 @@ node smoke.mjs
 
 1. 改 `package.json` 的 `version`（semver），提交；
 2. `npm publish --access public`。**账号开了写操作 2FA**：全新包名的首发会被 npm 自动转成 staged，生成 `0.0.0-stage` 占位桩，需要维护者带 2FA 在 npmjs.com 的 Staged Packages 或 `npm stage approve <stage-id>` 批准后才公开——这不是失败；
-3. 发布内容由 `files` 字段决定：`index.js` `client.js` `cordis.patch.yml` `README.md` `LICENSE`；
+3. 发布内容由 `files` 字段决定：`index.js` `client.js` `cordis.patch.yml` `README.md` `README.zh-CN.md` `LICENSE`；
 4. 发布后验证：`npm view dsh-session-smart-rename version`，或 `npm install dsh-session-smart-rename@<ver>` 到临时目录；
 5. 用完即删临时 `.npmrc`（`shred -u`）。如果 agent 的沙箱不允许写 `~/.npm`，把 `npm_config_cache` 指到工作区内再跑 npm。
 
@@ -83,6 +84,8 @@ node smoke.mjs
 - 2 空格缩进、单引号、语句带分号；中文 JSDoc 注释（与现有文件一致）；
 - 导出函数用 JSDoc 说明参数与副作用；错误信息用中文短句（用户会在弹框里看到）；
 - 新增宿主逻辑优先复用 `analyzeSession()`，不要在工具与路由里各写一套提示词。
+- **所有用户可见文案走 `client.js` 顶部的 `TEXT` 表**：`zh` 与 `en` 两份的 key 必须一一对应（缺 key 会渲染成 `undefined`），组件里不硬编码中文；分类名走 `CATEGORY_LABELS` + `categoryLabel(key)`，规则只认内部 key（`docs`/`maintenance`/`plugin`/`dsh`/`code`/`research`/`empty`/`other`）。
+- 界面语言取自浏览器（`navigator.language`，`zh` 开头用中文，其余英文）；**宿主提示词不要写死只有中文成立的约束**（"4~16 个汉字"），标题语言要跟随对话语言。
 
 ## 已知限制（文档与 PR 里不要夸大）
 
@@ -90,10 +93,13 @@ node smoke.mjs
 - 每次菜单点击 = 一次小模型调用（约 1~3 秒）；工具不传 `title` 时同理，传了就不调；
 - 浏览器自定义 tag 存 localStorage，工具路径看不到，用内置默认分类；
 - 子代理会话（`origin: subagent`）会被宿主拒绝改名；
-- 压缩过 / 无用户消息的会话日志可能读不到内容，确认框会退回本地关键词规则并标注来源。
+- 工具路径的候选分类来自配置 `categories`（默认中文七项），不随界面语言变化；
+- 压缩过 / 无用户消息的会话日志可能读不到内容，工作台会退回本地关键词规则并标注来源（此时只有 1 条候选，「换一批」会提示没拿到新建议）。
 
 ## 待办 / 可做但未做
 
 - 仓库没有 CI workflow（只有 `smoke.mjs` 手动跑）；如果加，至少跑 `node --check` + `node smoke.mjs`；
-- 还没有 git tag / GitHub Release（`v0.2.0` 未打），发布新版本时建议补上；
+- 还没有 git tag / GitHub Release（`v0.2.0`、`v0.3.0` 均未打），发布新版本时建议补上；
+- v0.3.2 可做：按显示宽度截断标题（CJK 算 2 单位）、把浏览器 tag 落一份到宿主给工具路径用；
+- v0.4 可做：批量「会话整理」面板（列表里按分类/关键词筛会话、批量改名）——用户明确表达过想要；
 - 若要降低与 `9Ashwin/dsh-session-rename` 的重复度，可考虑把工具拆成独立包；目前策略是保留超集并在 PR 里说明差异。
