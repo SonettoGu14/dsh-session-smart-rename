@@ -21,7 +21,8 @@ DSH（DeepSeek Harness）Web GUI 插件：把会话标题命名成 `分类 · �
 | `client.js` | 浏览器半体：`sidebar.workspaces.session.menu.item` 菜单项 + `shell.overlay` 命名工作台；状态拆成 category / topic，标题由 `composeTitle()` 合成；无构建步骤，`window.__ModuleLoader__.load` 包一层 |
 | `cordis.patch.yml` | 插入宿主组合的一行（`id: session-smart-rename`，`name: dsh-session-smart-rename`） |
 | `smoke.mjs` | 离线冒烟：假 ctx 跑路由、工具自动命名、工具直接命名、两种报错 |
-| `scripts/release.mjs` | 一条命令发布：检查 → 升版本 + tag → push → npm publish → `gh release create`（支持 `--dry-run` / `--no-release`） |
+| `scripts/release.mjs` | 一条命令发版：检查 → 升版本 + tag → push，npm 与 Release 交给 CI（支持 `--dry-run` / `--local-publish`） |
+| `.github/workflows/publish.yml` | tag 触发的发布流水线：检查 + Trusted Publishing 发 npm + `gh release create` |
 | `package.json` | `dsh.bundle` + `dsh.client` 清单；`files` 决定发布内容 |
 | `README.md` | 面向用户（英文，npm/GitHub 主入口）：安装、两个入口、实现、兼容性、本地化、限制 |
 | `README.zh-CN.md` | 中文版 README，与英文版互链，内容对齐 |
@@ -67,21 +68,25 @@ node smoke.mjs
 
 ## 发布流程
 
-**一条命令搞定 GitHub + npm**（`scripts/release.mjs`）：
+**一条命令：本地推 tag，CI 发 npm**（`scripts/release.mjs` + `.github/workflows/publish.yml`）：
 
 ```sh
 npm run release patch                          # 0.3.1 -> 0.3.2
 npm run release minor|major                    # 或直接给版本号 npm run release 0.4.0
 npm run release patch -- --dry-run             # 只检查 + 打印将执行的命令，不改任何东西
-npm run release patch -- --no-release          # 跳过 gh release create
+npm run release patch -- --local-publish       # 兜底：本机直接 npm publish（跳过 CI）
 ```
 
-脚本按序做：工作区/分支/同步/tag 冲突检查 → `node --check` + `smoke.mjs` → `npm version <ver>`（提交 + 打 `v<ver>` tag）→ `git push origin main --follow-tags` → `npm publish --access public` → `gh release create v<ver> --generate-notes`。任一步失败即停，不会半途自动回滚——按报错补完，必要时 `git reset --hard HEAD~1 && git tag -d v<ver>`（未 push 时）重来。
+本地脚本按序做：工作区/分支/同步/tag 冲突检查 → `node --check` ×2 + `smoke.mjs` → `npm version <ver>`（提交 + 打 `v<ver>` tag）→ `git push origin main --follow-tags`。之后 GitHub Actions（`publish.yml`，`on: push: tags: v*`）用 **Trusted Publishing**（OIDC，`permissions: id-token: write`）跑同样的检查、`npm publish --access public`、`gh release create --generate-notes`。本机不再需要可直发的 npm token。
+
+Trusted Publishing 的三个硬要求（npm 官方文档）：npm CLI ≥ 11.5.1、Node ≥ 22.14、**必须跑在 CI 的 OIDC 环境**（GitHub Actions / GitLab / CircleCI；本机 mac 没有 OIDC issuer，所以无法在本地用）。workflow 里因此有 `npm install -g npm@^11.5.1` 一步。npmjs.com 侧需要一次性配置：包设置 → Trusted Publisher → GitHub Actions → Organization or user `SonettoGu14`、Repository `dsh-session-smart-rename`、Workflow filename `publish.yml`，并勾上 "Allow npm publish"（默认只允许 stage publish）。
+
+失败处理：本地任一步失败即停，不会半途自动回滚——按报错补完，必要时 `git reset --hard HEAD~1 && git tag -d v<ver>`（未 push 时）重来。若 tag 已 push 而 CI 发版失败，修好后删 tag 重推，或在 Actions 页面 "Re-run jobs"（`workflow_dispatch` 也留了手动入口，但要求当前提交的版本号与所选 ref 一致）。
 
 其余约束：
 
 1. 发布内容由 `files` 字段决定：`index.js` `client.js` `cordis.patch.yml` `README.md` `README.zh-CN.md` `LICENSE`（`scripts/` 不发布）；
-2. **账号开了写操作 2FA**，本机 `~/.npmrc` 放的是"跳过 2FA 的 granular token"（2026-11-24 到期，npm 声明 2027-01 起吊销直发权限）。token 失效时 `npm publish` 会报 `EOTP` 并给出 `https://www.npmjs.com/auth/cli/<id>`，此时去 npmjs.com → Access Tokens → Generate New Token（勾 Bypass 2FA + Read and write），把新 token 写回 `~/.npmrc` 的 `//registry.npmjs.org/:_authToken=`；长期方案是 Trusted Publishing；
+2. **默认路径不需要 token**；只有 `--local-publish` 才用 `~/.npmrc` 里那个"跳过 2FA 的 granular token"（2026-11-24 到期，npm 声明 2027-01 起吊销直发权限）。token 失效时 `npm publish` 会报 `EOTP` 并给出 `https://www.npmjs.com/auth/cli/<id>`，此时去 npmjs.com → Access Tokens → Generate New Token（勾 Bypass 2FA + Read and write），把新 token 写回 `~/.npmrc` 的 `//registry.npmjs.org/:_authToken=`；正路始终是 CI 的 Trusted Publishing；
 3. 全新包名的首发会被 npm 自动转成 staged，生成 `0.0.0-stage` 占位桩，需带 2FA 在 Staged Packages 或 `npm stage approve <stage-id>` 批准——这不是失败；
 4. 发布后验证：`npm view dsh-session-smart-rename version`，或 `npm install dsh-session-smart-rename@<ver>` 到临时目录（npm 12 默认拒绝装 remote tarball，用 `npm pack` 或普通 install）；
 5. 用完即删临时 `.npmrc`。如果 agent 的沙箱不允许写 `~/.npm`，把 `npm_config_cache` 指到工作区内再跑 npm。
@@ -112,7 +117,7 @@ npm run release patch -- --no-release          # 跳过 gh release create
 
 ## 待办 / 可做但未做
 
-- 仓库没有 CI workflow（只有 `smoke.mjs` 手动跑）；如果加，至少跑 `node --check` + `node smoke.mjs`。发版已由 `scripts/release.mjs` 一条命令覆盖，CI 的价值在于 PR 上跑检查；
+- 目前唯一的 CI 是 tag 触发的 `publish.yml`（发布用），PR 上还没有跑 `node --check` + `smoke.mjs` 的检查 workflow；
 - `v0.3.1` 起每个版本都有 annotated tag + GitHub Release（更早的 `v0.2.0` / `v0.3.0` 没补）；
 - v0.3.2 可做：按显示宽度截断标题（CJK 算 2 单位）、把浏览器 tag 落一份到宿主给工具路径用；
 - v0.4 可做：批量「会话整理」面板（列表里按分类/关键词筛会话、批量改名）——用户明确表达过想要；
