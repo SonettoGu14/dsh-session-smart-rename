@@ -11,7 +11,7 @@ DSH（DeepSeek Harness）Web GUI 插件：把会话标题命名成 `分类 · �
 
 两条路都写 `source.kind: "user"` 的标题，后写的覆盖先写的（人永远有最终决定权）。
 
-已发布：npm [`dsh-session-smart-rename`](https://www.npmjs.com/package/dsh-session-smart-rename)（当前 `0.3.2`）；已收录进 [`awesome-dsh-plugin`](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（PR #12513，2026-11-07 合并）。
+已发布：npm [`dsh-session-smart-rename`](https://www.npmjs.com/package/dsh-session-smart-rename)（当前 `0.3.3`）；已收录进 [`awesome-dsh-plugin`](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（PR #12513，2026-11-07 合并）。
 
 ## 仓库结构
 

@@ -340,6 +340,47 @@ function cleanText(value, max) {
   return text.length > max ? text.slice(0, max - 1).trimEnd() + '…' : text;
 }
 
+/** 显示宽度：CJK / 全角记 2，其余记 1（与浏览器半体同一口径）。 */
+function displayWidth(text) {
+  let total = 0;
+  for (const char of String(text ?? '')) {
+    const code = char.codePointAt(0);
+    const wide = (code >= 0x1100 && code <= 0x115f)
+      || code === 0x2329 || code === 0x232a
+      || (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f)
+      || (code >= 0xac00 && code <= 0xd7a3)
+      || (code >= 0xf900 && code <= 0xfaff)
+      || (code >= 0xfe30 && code <= 0xfe6f)
+      || (code >= 0xff00 && code <= 0xff60)
+      || (code >= 0xffe0 && code <= 0xffe6);
+    total += wide ? 2 : 1;
+  }
+  return total;
+}
+
+/** 按显示宽度截断；英文尽量断在词边界，尾巴补省略号。 */
+function clampWidth(text, max) {
+  const value = String(text ?? '').trim();
+  if (!value) return '';
+  if (max <= 1) return '…';
+  if (displayWidth(value) <= max) return value;
+  let used = 0;
+  let cut = 0;
+  let lastSpace = -1;
+  for (const char of value) {
+    const step = displayWidth(char);
+    if (used + step > max - 1) break;
+    used += step;
+    cut += char.length;
+    if (char === ' ') lastSpace = cut - 1;
+  }
+  let head = value.slice(0, cut).trimEnd();
+  if (lastSpace > 1 && cut < value.length && displayWidth(value) - used > 4) {
+    head = value.slice(0, lastSpace).trimEnd();
+  }
+  return head ? head + '…' : '…';
+}
+
 /** 模型偶尔把「分类 · 主题」整串塞进 title，剥掉分类部分。 */
 function stripCategory(title) {
   return String(title ?? '').replace(/^[^·\n]{1,10} · /, '').trim();
@@ -458,8 +499,10 @@ function normalizeCandidates(parsed) {
   const out = [];
   for (const item of list) {
     if (item === null || typeof item !== 'object') continue;
-    const category = cleanText(item.category, 12);
-    const theme = cleanText(stripCategory(item.title), 24);
+    // 按显示宽度收口就够了，精确的一行预算由浏览器半体再裁一次：
+    // 这里按字符数截会把 Connectivity 直接切成 Connectivit…。
+    const category = clampWidth(cleanText(item.category, 40), 20);
+    const theme = clampWidth(cleanText(stripCategory(item.title), 80), 40);
     if (!theme) continue;
     const suggested = category ? category + ' · ' + theme : theme;
     if (seen.has(suggested)) continue;

@@ -26,6 +26,7 @@ let rejectBigBudget = false;
 let prepareAttempts = 0;
 let shortBatchOnce = false;
 let shortBatchCalls = 0;
+let englishBatch = false;
 const renamed = [];
 
 const sessionTitle = {
@@ -75,6 +76,19 @@ const ctx = {
           console.log('user 提示:', options.messages[0].content[0].text.slice(0, 160).replace(/\n/g, ' | '));
           capturedUserText = options.messages[0].content[0].text;
           capturedMaxTokens = route.maxTokens;
+          if (englishBatch) {
+            yield {
+              type: 'text-delta',
+              text: JSON.stringify({
+                candidates: [
+                  { category: 'Connectivity', title: 'Literal ok reply check', reason: 'checks the model echoes ok' },
+                  { category: 'Instructions', title: 'Verbatim output compliance test', reason: 'checks literal obedience' },
+                  { category: 'Placeholder', title: 'Empty session awaiting a real task', reason: 'nothing substantial yet' },
+                ],
+              }),
+            };
+            return;
+          }
           if (shortBatchOnce) {
             shortBatchCalls += 1;
             const few = shortBatchCalls === 1
@@ -179,6 +193,17 @@ if (topped.state.status !== 200 || llmCalls - beforeTopUp !== 2 || topped.state.
 }
 if (topped.state.body.candidates[2].suggested !== '其他 · 推荐信 PDF 交付') {
   console.error('FAIL: 补齐的候选不对');
+  process.exit(1);
+}
+
+/* 1d) 英文候选：分类不该被按字符数切掉（Connectivity 不能被切成 Connectivit…） */
+englishBatch = true;
+const en = makeResponse();
+await capturedRoute.handler(makeRequest({ sessionId: 's1', tags: ['Docs'] }), en);
+englishBatch = false;
+console.log('英文候选:', en.state.status, '|', en.state.body.candidates && en.state.body.candidates[0].suggested);
+if (en.state.body.candidates[0].category !== 'Connectivity' || en.state.body.candidates[0].theme !== 'Literal ok reply check') {
+  console.error('FAIL: 英文分类/主题不该被按字符数截断');
   process.exit(1);
 }
 
