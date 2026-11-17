@@ -2,6 +2,10 @@
   "name": "dsh-session-smart-rename",
   "version": "0.3.1",
   "type": "module",
+  "scripts": {
+    "check": "node --check index.js && node --check client.js && node smoke.mjs",
+    "release": "node scripts/release.mjs"
+  },
   "description": "Smart session rename for DSH: a bilingual naming workbench (category chips, topic input, three AI suggestions) plus a model-facing smart_rename_session tool, both naming sessions as \"category · topic\".",
   "license": "MIT",
   "author": "SonettoGu14",
