@@ -317,14 +317,20 @@ async function callModel(ctx, route, userText, sessionId) {
   }
 }
 
-/** 宽松解析：容忍 ```json 围栏和前后废话。 */
+/** 宽松解析：容忍 ```json 围栏、前后废话，以及对象结尾多出来的一个逗号。 */
 function parseLooseJson(text) {
   const source = String(text ?? '');
   const start = source.indexOf('{');
   const end = source.lastIndexOf('}');
   if (start < 0 || end <= start) return null;
+  const slice = source.slice(start, end + 1);
   try {
-    return JSON.parse(source.slice(start, end + 1));
+    return JSON.parse(slice);
+  } catch {
+    /* 模型偶尔写成 {"reason":"…",}，去掉多余逗号再试一次 */
+  }
+  try {
+    return JSON.parse(slice.replace(/,\s*([}\]])/g, '$1'));
   } catch {
     return null;
   }
@@ -375,7 +381,9 @@ function clampWidth(text, max) {
     if (char === ' ') lastSpace = cut - 1;
   }
   let head = value.slice(0, cut).trimEnd();
-  if (lastSpace > 1 && cut < value.length && displayWidth(value) - used > 4) {
+  // 只在切断的是英文单词时才退回词边界：中文没有空格，回退会把整个词都吃掉
+  const tailWord = value.slice(lastSpace + 1);
+  if (lastSpace > 1 && /^[A-Za-z0-9]/.test(tailWord) && cut < value.length && displayWidth(value) - used > 4) {
     head = value.slice(0, lastSpace).trimEnd();
   }
   return head ? head + '…' : '…';

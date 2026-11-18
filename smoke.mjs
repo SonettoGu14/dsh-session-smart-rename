@@ -27,6 +27,7 @@ let prepareAttempts = 0;
 let shortBatchOnce = false;
 let shortBatchCalls = 0;
 let englishBatch = false;
+let trailingComma = false;
 const renamed = [];
 
 const sessionTitle = {
@@ -86,6 +87,14 @@ const ctx = {
                   { category: 'Placeholder', title: 'Empty session awaiting a real task', reason: 'nothing substantial yet' },
                 ],
               }),
+            };
+            return;
+          }
+          if (trailingComma) {
+            /* 真实模型偶发在 } 前多写一个逗号，宽松解析要能救回来 */
+            yield {
+              type: 'text-delta',
+              text: '{"candidates":[{"category":"Smoke Test","title":"Exact Echo Reply Check","reason":"验证模型能否逐字复述",},{"category":"Session Log","title":"Single-Token Acknowledgment","reason":"仅一次 ok 应答",},{"category":"Next Step","title":"Ready for Real Task","reason":"空跑确认通路",},]}',
             };
             return;
           }
@@ -204,6 +213,17 @@ englishBatch = false;
 console.log('英文候选:', en.state.status, '|', en.state.body.candidates && en.state.body.candidates[0].suggested);
 if (en.state.body.candidates[0].category !== 'Connectivity' || en.state.body.candidates[0].theme !== 'Literal ok reply check') {
   console.error('FAIL: 英文分类/主题不该被按字符数截断');
+  process.exit(1);
+}
+
+/* 1e) 模型在对象结尾多写一个逗号 → 仍应解析出候选，而不是退回规则 */
+trailingComma = true;
+const loose = makeResponse();
+await capturedRoute.handler(makeRequest({ sessionId: 's1', tags: ['Docs'] }), loose);
+trailingComma = false;
+console.log('尾逗号候选:', loose.state.status, '|', loose.state.body.source, '|', loose.state.body.candidates && loose.state.body.candidates.length);
+if (loose.state.status !== 200 || loose.state.body.source !== 'llm' || !loose.state.body.candidates || loose.state.body.candidates.length !== 3) {
+  console.error('FAIL: 对象尾逗号不该让候选退回规则');
   process.exit(1);
 }
 

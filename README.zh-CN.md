@@ -12,6 +12,16 @@
 
 这个插件把两件事拆开：模型**提建议**，人来**决定**。弹窗里是你的分类 chips、主题输入框和最终标题的实时预览，下面三条模型建议点一下就能整条填入。同一段分析逻辑也以工具的形式交给 agent——话题真正转向时，会话可以自己改名。
 
+## 长什么样
+
+![命名工作台](https://raw.githubusercontent.com/SonettoGu14/dsh-session-smart-rename/main/docs/screenshots/naming-workbench.png)
+
+上面是分类 chips，中间是主题输入框和 `分类 · 主题` 实时预览，下面三条建议点一下整条填入；**换一批** 会带着已给过的标题再问。
+
+![侧栏里的标题](https://raw.githubusercontent.com/SonettoGu14/dsh-session-smart-rename/main/docs/screenshots/sidebar-titles.png)
+
+它写出来的标题都是同一个形状，侧栏就按分类自动排好了。
+
 ## 特性
 
 - **命名工作台**：分类 chips（可新建自定义 tag，存在浏览器里）+ 主题输入框 + `分类 · 主题` 实时预览；回车保存，Esc 关闭。
@@ -48,7 +58,7 @@ dsh plugin --profile <你的 profile> add github:SonettoGu14/dsh-session-smart-r
 
 `回车` 保存，`Esc` 关闭。点菜单后会先等分析完成再弹窗，所以你总是先看到建议再决定。
 
-标题按 26 格显示宽度收口（一个汉字算两格），长英文主题会断在词边界上，不会溢出侧栏。
+标题按 26 格显示宽度收口（一个汉字算两格），最终标题预览里长主题会以 `…` 结尾——那就是侧栏真能显示的长度；建议行保留模型原话，先看全再收窄。英文主题断在词边界上，中文按字截断。
 
 ## 模型侧：工具
 

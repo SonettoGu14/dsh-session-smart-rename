@@ -350,8 +350,9 @@ window.__ModuleLoader__.load({
         if (char === ' ') lastSpace = cut - 1;
       }
       let head = value.slice(0, cut).trimEnd();
-      // 被切断的是单词中间（还剩好几格才结束这个词）就退回上一个词边界
-      if (lastSpace > 1 && cut < value.length && displayWidth(value) - used > 4) {
+      // 只在切断的是英文单词时才退回词边界：中文没有空格，回退会把整个词都吃掉
+      const tailWord = value.slice(lastSpace + 1);
+      if (lastSpace > 1 && /^[A-Za-z0-9]/.test(tailWord) && cut < value.length && displayWidth(value) - used > 4) {
         head = value.slice(0, lastSpace).trimEnd();
       }
       return head ? head + '…' : '…';
@@ -691,7 +692,8 @@ window.__ModuleLoader__.load({
       for (const item of source) {
         if (item === null || typeof item !== 'object') continue;
         const category = typeof item.category === 'string' ? item.category.trim() : '';
-        const theme = fitTheme(category, String(item.theme || item.title || '').trim());
+        /* 候选项保留模型原话：列表里要看全，收窄交给预览与保存 */
+        const theme = String(item.theme || item.title || '').trim();
         if (!theme) continue;
         out.push({
           category,
@@ -811,7 +813,7 @@ window.__ModuleLoader__.load({
 
       const save = useCallback(async () => {
         if (!pending) return;
-        const title = composeTitle(category, topic);
+        const title = composeTitle(category, fitTheme(category, topic));
         if (!title) {
           setError(TX.needTopic);
           return;
@@ -852,7 +854,7 @@ window.__ModuleLoader__.load({
 
       if (!pending) return null;
 
-      const finalTitle = composeTitle(category, topic);
+      const finalTitle = composeTitle(category, fitTheme(category, topic));
       const disabled = saving || finalTitle === '';
 
       return h(

@@ -12,6 +12,16 @@ Most session renamers ask a model for a title and hand it back. That works until
 
 This plugin separates the two jobs. The model **proposes**; you **decide**. A dialog opens with your category chips, a topic field, and a live preview of the finished title, with three model suggestions underneath as click-to-fill rows. The same analyzer is also exposed to agents as a tool, so a session can rename itself when the work changes direction.
 
+## What it looks like
+
+![The naming workbench](https://raw.githubusercontent.com/SonettoGu14/dsh-session-smart-rename/main/docs/screenshots/naming-workbench.png)
+
+Category chips on top, the topic field and a live `category · topic` preview in the middle, three click-to-fill suggestions at the bottom — **Another batch** asks again without repeating.
+
+![Titles in the sidebar](https://raw.githubusercontent.com/SonettoGu14/dsh-session-smart-rename/main/docs/screenshots/sidebar-titles.png)
+
+Every title it writes has the same shape, so the sidebar sorts itself by category.
+
 ## Features
 
 - **Naming workbench** — category chips (plus custom tags saved in your browser), a topic field, and a live `category · topic` preview. Enter saves, Esc closes.
@@ -84,6 +94,8 @@ Not happy with the result? Rename it again from the sidebar — both paths write
 - Both entries write through the host's `sessionTitle.rename` (the dialog via `POST /api/session/rename`), so the title is pinned exactly like the built-in rename.
 - Titles are generated with the lowest reasoning effort the model offers, on a 2048-token budget for three candidates plus thinking, with a one-shot retry at 700 tokens if the gateway rejects the larger budget. If the model comes back with fewer than three candidates, one more call tops them up, carrying the ones you already have as "do not repeat".
 - Suggestions are cached per session for five minutes; **Another batch** skips the cache. If the model or the log is unavailable, the dialog falls back to local keyword rules and labels the source `Local rules`.
+- Titles are clamped to 26 display cells (a CJK character counts two), so a long topic ends with `…` in the preview — that is what the sidebar can actually show. Suggestion rows keep the model's full wording, so you still see the idea before it gets shortened.
+- The parser tolerates the small JSON sins models commit — fenced blocks, prose around the object, and a stray trailing comma — instead of dropping to local rules.
 
 ## Compatibility
 

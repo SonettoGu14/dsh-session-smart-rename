@@ -11,7 +11,7 @@ DSH（DeepSeek Harness）Web GUI 插件：把会话标题命名成 `分类 · �
 
 两条路都写 `source.kind: "user"` 的标题，后写的覆盖先写的（人永远有最终决定权）。
 
-已发布：npm [`dsh-session-smart-rename`](https://www.npmjs.com/package/dsh-session-smart-rename)（当前 `0.3.3`）；已收录进 [`awesome-dsh-plugin`](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（PR #12513，2026-11-07 合并）。
+已发布：npm [`dsh-session-smart-rename`](https://www.npmjs.com/package/dsh-session-smart-rename)（当前 `0.3.4`）；已收录进 [`awesome-dsh-plugin`](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)（PR #12513，2026-11-07 合并）。
 
 ## 仓库结构
 
@@ -26,6 +26,7 @@ DSH（DeepSeek Harness）Web GUI 插件：把会话标题命名成 `分类 · �
 | `package.json` | `dsh.bundle` + `dsh.client` 清单；`files` 决定发布内容 |
 | `README.md` | 面向用户（英文，npm/GitHub 主入口）：安装、两个入口、实现、兼容性、本地化、限制 |
 | `README.zh-CN.md` | 中文版 README，与英文版互链，内容对齐 |
+| `screenshots.json` | 插件市场的截图声明（仓库根，相对路径数组，≤8 张）；`docs/screenshots/` 放这几张图，README 用 raw 绝对地址引用 |
 
 ## 宿主契约（已在本机 DSH 上核对，不要凭猜）
 
@@ -58,7 +59,7 @@ node --check index.js && node --check client.js
 node smoke.mjs
 ```
 
-`smoke.mjs` 应输出 `SMOKE OK`，且覆盖：路由 200 且返回 3 条 `candidates`（单条字段仍向后兼容）、换一批把 `avoid` 写进提示词、只回 1 条时自动补一次凑满 3 条、预算回退（2048 被拒 → 700 重试一次）、未知会话 404、工具自动命名（`source: "analyzed"`）、工具直接命名（`source: "model"`，且不再调模型）、两种报错。
+`smoke.mjs` 应输出 `SMOKE OK`，且覆盖：路由 200 且返回 3 条 `candidates`（单条字段仍向后兼容）、换一批把 `avoid` 写进提示词、只回 1 条时自动补一次凑满 3 条、预算回退（2048 被拒 → 700 重试一次）、模型回的对象带尾逗号时仍走 llm 而非规则、未知会话 404、工具自动命名（`source: "analyzed"`）、工具直接命名（`source: "model"`，且不再调模型）、两种报错。
 
 真机检查（改宿主半体后必须做一次）：
 
@@ -95,7 +96,8 @@ Trusted Publishing 的三个硬要求（npm 官方文档）：npm CLI ≥ 11.5.1
 
 - 列表条目：`awesome-dsh-plugin/awesome-dsh-plugin` 仓库的 `data/plugins/SonettoGu14__dsh-session-smart-rename.yml`，一个插件一个文件；
 - **不要手改列表的两个 README**，它们由 `scripts/generate-readme.mjs` 从数据生成；PR 只动自己那一个 yml；
-- 描述即声明：改了功能（例如新增/移除工具、改变触发方式）要同步改条目描述，否则会被打回；
+- 描述即声明：改了功能（例如新增/移除工具、改变触发方式）要同步改条目描述，否则会被打回；条目里没有版本字段，单纯发新版本不需要 PR；
+- 截图走作者自声明：仓库根 `screenshots.json` + 图片路径（≤8 张、相对路径、不能以 `/` 开头或含 `..`），构建时按 `raw.githubusercontent.com/<repo>/HEAD/<path>` 解析 —— **不需要 PR**，推上 GitHub 后列表页自动拿到；
 - 仓库年龄门槛（≥1 天）由 CI 的 `Submission gate` 检查，未满时会自行重跑，不需要重开 PR。
 
 ## 代码风格
@@ -113,12 +115,13 @@ Trusted Publishing 的三个硬要求（npm 官方文档）：npm CLI ≥ 11.5.1
 - 浏览器自定义 tag 存 localStorage，工具路径看不到，用内置默认分类；
 - 子代理会话（`origin: subagent`）会被宿主拒绝改名；
 - 工具路径的候选分类来自配置 `categories`（默认中文七项），不随界面语言变化；
+- 建议行显示模型原话（完整），只有「最终标题」预览和保存时才按 26 格收窄并以 `…` 结尾——预览里看到的长度就是侧栏真能显示的长度；
 - 压缩过 / 无用户消息的会话日志可能读不到内容，工作台会退回本地关键词规则并标注来源（此时只有 1 条候选，「换一批」会提示没拿到新建议）。
 
 ## 待办 / 可做但未做
 
 - 目前唯一的 CI 是 tag 触发的 `publish.yml`（发布用），PR 上还没有跑 `node --check` + `smoke.mjs` 的检查 workflow；
 - `v0.3.1` 起每个版本都有 annotated tag + GitHub Release（更早的 `v0.2.0` / `v0.3.0` 没补）；
-- v0.3.2 可做：把浏览器 tag 落一份到宿主给工具路径用（按显示宽度截断标题、候选不足时补一次已在 0.3.2 做掉）；
+- 可做：把浏览器 tag 落一份到宿主给工具路径用（按显示宽度截断标题、候选不足时补一次已在 0.3.2 做掉）；
 - v0.4 可做：批量「会话整理」面板（列表里按分类/关键词筛会话、批量改名）——用户明确表达过想要；
 - 若要降低与 `9Ashwin/dsh-session-rename` 的重复度，可考虑把工具拆成独立包；目前策略是保留超集并在 PR 里说明差异。
