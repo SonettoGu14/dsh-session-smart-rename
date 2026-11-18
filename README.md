@@ -18,10 +18,6 @@ This plugin separates the two jobs. The model **proposes**; you **decide**. A di
 
 Category chips on top, the topic field and a live `category · topic` preview in the middle, three click-to-fill suggestions at the bottom — **Another batch** asks again without repeating.
 
-![Titles in the sidebar](https://raw.githubusercontent.com/SonettoGu14/dsh-session-smart-rename/main/docs/screenshots/sidebar-titles.png)
-
-Every title it writes has the same shape, so the sidebar sorts itself by category.
-
 ## Features
 
 - **Naming workbench** — category chips (plus custom tags saved in your browser), a topic field, and a live `category · topic` preview. Enter saves, Esc closes.

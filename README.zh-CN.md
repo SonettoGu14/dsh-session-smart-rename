@@ -18,10 +18,6 @@
 
 上面是分类 chips，中间是主题输入框和 `分类 · 主题` 实时预览，下面三条建议点一下整条填入；**换一批** 会带着已给过的标题再问。
 
-![侧栏里的标题](https://raw.githubusercontent.com/SonettoGu14/dsh-session-smart-rename/main/docs/screenshots/sidebar-titles.png)
-
-它写出来的标题都是同一个形状，侧栏就按分类自动排好了。
-
 ## 特性
 
 - **命名工作台**：分类 chips（可新建自定义 tag，存在浏览器里）+ 主题输入框 + `分类 · 主题` 实时预览；回车保存，Esc 关闭。
